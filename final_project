@@ -3,19 +3,19 @@
   {
    "cell_type": "code",
    "execution_count": 1,
-   "id": "7738e003",
+   "id": "464c2fba",
    "metadata": {
     "execution": {
-     "iopub.execute_input": "2025-04-09T00:21:50.054714Z",
-     "iopub.status.busy": "2025-04-09T00:21:50.054418Z",
-     "iopub.status.idle": "2025-04-09T00:21:56.509328Z",
-     "shell.execute_reply": "2025-04-09T00:21:56.508152Z"
+     "iopub.execute_input": "2025-04-09T00:46:01.023877Z",
+     "iopub.status.busy": "2025-04-09T00:46:01.023481Z",
+     "iopub.status.idle": "2025-04-09T00:46:10.268791Z",
+     "shell.execute_reply": "2025-04-09T00:46:10.267674Z"
     },
     "papermill": {
-     "duration": 6.459923,
-     "end_time": "2025-04-09T00:21:56.510799",
+     "duration": 9.251421,
+     "end_time": "2025-04-09T00:46:10.270613",
      "exception": false,
-     "start_time": "2025-04-09T00:21:50.050876",
+     "start_time": "2025-04-09T00:46:01.019192",
      "status": "completed"
     },
     "tags": []
@@ -25,8 +25,8 @@
      "name": "stdout",
      "output_type": "stream",
      "text": [
-      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m144.7/144.7 kB\u001b[0m \u001b[31m9.9 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
-      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m100.9/100.9 kB\u001b[0m \u001b[31m7.1 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
+      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m144.7/144.7 kB\u001b[0m \u001b[31m3.7 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
+      "\u001b[2K   \u001b[90m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m100.9/100.9 kB\u001b[0m \u001b[31m5.0 MB/s\u001b[0m eta \u001b[36m0:00:00\u001b[0m\r\n",
       "\u001b[?25h"
      ]
     }
@@ -39,19 +39,19 @@
   {
    "cell_type": "code",
    "execution_count": 2,
-   "id": "618035b2",
+   "id": "567391b3",
    "metadata": {
     "execution": {
-     "iopub.execute_input": "2025-04-09T00:21:56.515663Z",
-     "iopub.status.busy": "2025-04-09T00:21:56.515418Z",
-     "iopub.status.idle": "2025-04-09T00:21:57.440634Z",
-     "shell.execute_reply": "2025-04-09T00:21:57.439850Z"
+     "iopub.execute_input": "2025-04-09T00:46:10.277938Z",
+     "iopub.status.busy": "2025-04-09T00:46:10.277554Z",
+     "iopub.status.idle": "2025-04-09T00:46:11.564521Z",
+     "shell.execute_reply": "2025-04-09T00:46:11.563626Z"
     },
     "papermill": {
-     "duration": 0.929002,
-     "end_time": "2025-04-09T00:21:57.442109",
+     "duration": 1.292423,
+     "end_time": "2025-04-09T00:46:11.566313",
      "exception": false,
-     "start_time": "2025-04-09T00:21:56.513107",
+     "start_time": "2025-04-09T00:46:10.273890",
      "status": "completed"
     },
     "tags": []
@@ -68,19 +68,78 @@
   {
    "cell_type": "code",
    "execution_count": 3,
-   "id": "17dd9b5e",
+   "id": "9997fd00",
    "metadata": {
     "execution": {
-     "iopub.execute_input": "2025-04-09T00:21:57.446514Z",
-     "iopub.status.busy": "2025-04-09T00:21:57.446149Z",
-     "iopub.status.idle": "2025-04-09T00:21:57.628518Z",
-     "shell.execute_reply": "2025-04-09T00:21:57.627744Z"
+     "iopub.execute_input": "2025-04-09T00:46:11.573541Z",
+     "iopub.status.busy": "2025-04-09T00:46:11.573022Z",
+     "iopub.status.idle": "2025-04-09T00:46:11.709728Z",
+     "shell.execute_reply": "2025-04-09T00:46:11.708676Z"
     },
     "papermill": {
-     "duration": 0.186007,
-     "end_time": "2025-04-09T00:21:57.630063",
+     "duration": 0.14226,
+     "end_time": "2025-04-09T00:46:11.711607",
      "exception": false,
-     "start_time": "2025-04-09T00:21:57.444056",
+     "start_time": "2025-04-09T00:46:11.569347",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "from kaggle_secrets import UserSecretsClient\n",
+    "\n",
+    "GOOGLE_API_KEY = UserSecretsClient().get_secret(\"GOOGLE_API_KEY\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "id": "2438ca95",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-09T00:46:11.718970Z",
+     "iopub.status.busy": "2025-04-09T00:46:11.718594Z",
+     "iopub.status.idle": "2025-04-09T00:46:12.101103Z",
+     "shell.execute_reply": "2025-04-09T00:46:12.099841Z"
+    },
+    "papermill": {
+     "duration": 0.388248,
+     "end_time": "2025-04-09T00:46:12.102979",
+     "exception": false,
+     "start_time": "2025-04-09T00:46:11.714731",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "client = genai.Client(api_key=GOOGLE_API_KEY)\n",
+    "\n",
+    "# You can optionally set your model configuration here too\n",
+    "model_config = types.GenerateContentConfig(\n",
+    "    temperature=0.1,\n",
+    "    top_p=1,\n",
+    "    max_output_tokens=250,\n",
+    ")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "id": "c4dc0aac",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-09T00:46:12.110272Z",
+     "iopub.status.busy": "2025-04-09T00:46:12.109917Z",
+     "iopub.status.idle": "2025-04-09T00:46:12.415384Z",
+     "shell.execute_reply": "2025-04-09T00:46:12.414378Z"
+    },
+    "papermill": {
+     "duration": 0.311284,
+     "end_time": "2025-04-09T00:46:12.417357",
+     "exception": false,
+     "start_time": "2025-04-09T00:46:12.106073",
      "status": "completed"
     },
     "tags": []
@@ -98,47 +157,20 @@
   },
   {
    "cell_type": "code",
-   "execution_count": 4,
-   "id": "f36ea3fe",
+   "execution_count": 6,
+   "id": "801c02f7",
    "metadata": {
     "execution": {
-     "iopub.execute_input": "2025-04-09T00:21:57.634454Z",
-     "iopub.status.busy": "2025-04-09T00:21:57.634098Z",
-     "iopub.status.idle": "2025-04-09T00:21:57.835027Z",
-     "shell.execute_reply": "2025-04-09T00:21:57.834299Z"
+     "iopub.execute_input": "2025-04-09T00:46:12.425024Z",
+     "iopub.status.busy": "2025-04-09T00:46:12.424442Z",
+     "iopub.status.idle": "2025-04-09T00:46:12.430116Z",
+     "shell.execute_reply": "2025-04-09T00:46:12.429134Z"
     },
     "papermill": {
-     "duration": 0.204551,
-     "end_time": "2025-04-09T00:21:57.836515",
+     "duration": 0.011268,
+     "end_time": "2025-04-09T00:46:12.431734",
      "exception": false,
-     "start_time": "2025-04-09T00:21:57.631964",
-     "status": "completed"
-    },
-    "tags": []
-   },
-   "outputs": [],
-   "source": [
-    "from kaggle_secrets import UserSecretsClient\n",
-    "\n",
-    "GOOGLE_API_KEY = UserSecretsClient().get_secret(\"GOOGLE_API_KEY\")"
-   ]
-  },
-  {
-   "cell_type": "code",
-   "execution_count": 5,
-   "id": "cb0343de",
-   "metadata": {
-    "execution": {
-     "iopub.execute_input": "2025-04-09T00:21:57.840893Z",
-     "iopub.status.busy": "2025-04-09T00:21:57.840691Z",
-     "iopub.status.idle": "2025-04-09T00:21:57.844769Z",
-     "shell.execute_reply": "2025-04-09T00:21:57.844176Z"
-    },
-    "papermill": {
-     "duration": 0.007441,
-     "end_time": "2025-04-09T00:21:57.845875",
-     "exception": false,
-     "start_time": "2025-04-09T00:21:57.838434",
+     "start_time": "2025-04-09T00:46:12.420466",
      "status": "completed"
     },
     "tags": []
@@ -210,20 +242,20 @@
   },
   {
    "cell_type": "code",
-   "execution_count": 6,
-   "id": "5bbe25f2",
+   "execution_count": 7,
+   "id": "9ce4540b",
    "metadata": {
     "execution": {
-     "iopub.execute_input": "2025-04-09T00:21:57.849771Z",
-     "iopub.status.busy": "2025-04-09T00:21:57.849597Z",
-     "iopub.status.idle": "2025-04-09T00:21:58.551756Z",
-     "shell.execute_reply": "2025-04-09T00:21:58.550760Z"
+     "iopub.execute_input": "2025-04-09T00:46:12.439155Z",
+     "iopub.status.busy": "2025-04-09T00:46:12.438743Z",
+     "iopub.status.idle": "2025-04-09T00:46:13.290989Z",
+     "shell.execute_reply": "2025-04-09T00:46:13.289964Z"
     },
     "papermill": {
-     "duration": 0.705807,
-     "end_time": "2025-04-09T00:21:58.553369",
+     "duration": 0.858153,
+     "end_time": "2025-04-09T00:46:13.292951",
      "exception": false,
-     "start_time": "2025-04-09T00:21:57.847562",
+     "start_time": "2025-04-09T00:46:12.434798",
      "status": "completed"
     },
     "tags": []
@@ -299,6 +331,87 @@
     "    \n",
     "    return all_categories, all_subcategories"
    ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "id": "7e71cb2c",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-09T00:46:13.300344Z",
+     "iopub.status.busy": "2025-04-09T00:46:13.299972Z",
+     "iopub.status.idle": "2025-04-09T00:46:18.408404Z",
+     "shell.execute_reply": "2025-04-09T00:46:18.407202Z"
+    },
+    "papermill": {
+     "duration": 5.113985,
+     "end_time": "2025-04-09T00:46:18.410168",
+     "exception": false,
+     "start_time": "2025-04-09T00:46:13.296183",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Processing batch 1 (0 to 5)\n",
+      "Sample result - 'Increase account balance by 1.0 AUD': Income, Interests, dividends\n",
+      "Processing batch 2 (5 to 10)\n",
+      "Sample result - 'Bonus interest activated ($72.91)': Income, Interests, dividends\n",
+      "\n",
+      "Results for test data:\n",
+      "                           description            category  \\\n",
+      "0  Increase account balance by 1.0 AUD  Financial expenses   \n",
+      "1                       Amazon Digital            Shopping   \n",
+      "2             Bonus interest activated              Income   \n",
+      "3             Bonus interest activated              Income   \n",
+      "4                      Interest earned              Income   \n",
+      "5    Bonus interest activated ($72.91)              Income   \n",
+      "6             Bonus interest activated              Income   \n",
+      "7             Bonus interest activated              Income   \n",
+      "8             Bonus interest activated              Income   \n",
+      "9             Bonus interest activated              Income   \n",
+      "\n",
+      "                subcategory  \n",
+      "0             Charges, Fees  \n",
+      "1  Electronics, accessories  \n",
+      "2      Interests, dividends  \n",
+      "3      Interests, dividends  \n",
+      "4      Interests, dividends  \n",
+      "5      Interests, dividends  \n",
+      "6      Interests, dividends  \n",
+      "7      Interests, dividends  \n",
+      "8      Interests, dividends  \n",
+      "9      Interests, dividends  \n"
+     ]
+    }
+   ],
+   "source": [
+    "# Execute the batch processing function\n",
+    "# Start with a small batch for testing before processing the entire dataset\n",
+    "test_descriptions = df['description'].head(10).tolist()  # Process just 10 for testing\n",
+    "categories, subcategories = process_transactions_in_batches(test_descriptions, batch_size=5)\n",
+    "\n",
+    "# Add the results to your dataframe for the test data\n",
+    "test_df = df.head(10).copy()\n",
+    "test_df['category'] = categories\n",
+    "test_df['subcategory'] = subcategories\n",
+    "\n",
+    "# Display the results\n",
+    "print(\"\\nResults for test data:\")\n",
+    "print(test_df[['description', 'category', 'subcategory']])\n",
+    "\n",
+    "# After confirming everything works, uncomment these lines to process the full dataset\n",
+    "# print(\"\\nProcessing full dataset...\")\n",
+    "# categories, subcategories = process_transactions_in_batches(df['description'].tolist(), batch_size=5)\n",
+    "# df['category'] = categories\n",
+    "# df['subcategory'] = subcategories\n",
+    "# print(\"\\nFinal Results:\")\n",
+    "# print(df[['description', 'category', 'subcategory']].head(20))"
+   ]
   }
  ],
  "metadata": {
@@ -336,14 +449,14 @@
   },
   "papermill": {
    "default_parameters": {},
-   "duration": 11.156153,
-   "end_time": "2025-04-09T00:21:59.173557",
+   "duration": 21.943019,
+   "end_time": "2025-04-09T00:46:19.233815",
    "environment_variables": {},
    "exception": null,
    "input_path": "__notebook__.ipynb",
    "output_path": "__notebook__.ipynb",
    "parameters": {},
-   "start_time": "2025-04-09T00:21:48.017404",
+   "start_time": "2025-04-09T00:45:57.290796",
    "version": "2.6.0"
   }
  },
