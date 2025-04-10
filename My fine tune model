@@ -1,1 +1,1672 @@
-{"metadata":{"kernelspec":{"name":"python3","display_name":"Python 3","language":"python"},"language_info":{"name":"python","version":"3.10.14","mimetype":"text/x-python","codemirror_mode":{"name":"ipython","version":3},"pygments_lexer":"ipython3","nbconvert_exporter":"python","file_extension":".py"},"colab":{"name":"day-4-fine-tuning-a-custom-model.ipynb","toc_visible":true},"kaggle":{"accelerator":"none","dataSources":[{"sourceType":"datasetVersion","sourceId":11348509,"datasetId":7099621,"databundleVersionId":11775928}],"dockerImageVersionId":30786,"isInternetEnabled":true,"language":"python","sourceType":"notebook","isGpuEnabled":false}},"nbformat_minor":4,"nbformat":4,"cells":[{"cell_type":"markdown","source":"## Categorise finance transactions\n\nIn life, my financial transactions are often categorised incorrectly in my budgeting app. I decided to find a better solution.\n\nIn this example, I will first try to categrise with an exsiting Gemini model using zero-shot prompt and evaluate it performance.Then I will tune a model with the data catagorised by me,and evaluate its performance.","metadata":{"id":"4KDIFPAL2EnL"}},{"cell_type":"code","source":"!pip uninstall -qqy jupyterlab  # Remove unused conflicting packages\n!pip install -U -q \"google-genai==1.7.0\"","metadata":{"id":"9wafTyEH1_xF","trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:23:51.964055Z","iopub.execute_input":"2025-04-10T05:23:51.964799Z","iopub.status.idle":"2025-04-10T05:24:00.040561Z","shell.execute_reply.started":"2025-04-10T05:23:51.964765Z","shell.execute_reply":"2025-04-10T05:24:00.039241Z"}},"outputs":[],"execution_count":null},{"cell_type":"code","source":"from google import genai\nfrom google.genai import types\n\ngenai.__version__","metadata":{"id":"T0CBG9xL2PvT","trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:00.041977Z","iopub.execute_input":"2025-04-10T05:24:00.042261Z","iopub.status.idle":"2025-04-10T05:24:00.048071Z","shell.execute_reply.started":"2025-04-10T05:24:00.042237Z","shell.execute_reply":"2025-04-10T05:24:00.047177Z"}},"outputs":[],"execution_count":null},{"cell_type":"code","source":"from kaggle_secrets import UserSecretsClient\n\nGOOGLE_API_KEY = UserSecretsClient().get_secret(\"GOOGLE_API_KEY\")\n\nclient = genai.Client(api_key=GOOGLE_API_KEY)","metadata":{"id":"VuJPY3GK2SLZ","trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:00.050312Z","iopub.execute_input":"2025-04-10T05:24:00.050613Z","iopub.status.idle":"2025-04-10T05:24:00.235238Z","shell.execute_reply.started":"2025-04-10T05:24:00.050586Z","shell.execute_reply":"2025-04-10T05:24:00.234354Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"### Explore available models","metadata":{"id":"CqVA5QFO6n4z"}},{"cell_type":"code","source":"for model in client.models.list():\n        print(model.name)","metadata":{"id":"coEacWAB6o0G","trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:00.236388Z","iopub.execute_input":"2025-04-10T05:24:00.236669Z","iopub.status.idle":"2025-04-10T05:24:00.308888Z","shell.execute_reply.started":"2025-04-10T05:24:00.236641Z","shell.execute_reply":"2025-04-10T05:24:00.308060Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"## Use the dataset\n\nI have uploaded transaction data categorised by me. Then I group it to training data and test data","metadata":{"id":"peFm0w_0c1CO"}},{"cell_type":"code","source":"# Load your transaction data\nimport pandas as pd\nfrom sklearn.model_selection import train_test_split\n\n# Load your data\nfile_path = \"/kaggle/input/training/categorized_transaction.csv\"\ndf = pd.read_csv(file_path)\n\n# Split into train and test sets (80/20 split)\ndf_train, df_test = train_test_split(df, test_size=0.2, random_state=42)\n\n# Display the subcategories (labels) in your dataset\nsubcategories = df['subcategory'].unique()\nprint(f\"Number of subcategories: {len(subcategories)}\")\nprint(\"Sample subcategories:\", subcategories[:10])  # Show first 10 subcategories\n\n# Quick look at note examples\nprint(\"\\nSample notes:\")\nfor i, note in enumerate(df['note'].head(3)):\n    print(f\"{i+1}. {note} → {df['subcategory'].iloc[i]}\")","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:00.309841Z","iopub.execute_input":"2025-04-10T05:24:00.310093Z","iopub.status.idle":"2025-04-10T05:24:00.338201Z","shell.execute_reply.started":"2025-04-10T05:24:00.310067Z","shell.execute_reply":"2025-04-10T05:24:00.336606Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"## Sample the dataset\nNow sample the data. I will keep 50 rows for each subcategory for training.","metadata":{"id":"03lDs1O4ZQ0-"}},{"cell_type":"code","source":"def sample_data(df, num_samples):\n    \"\"\"\n    Sample rows from each subcategory, selecting num_samples from each.\n    If a subcategory has fewer than num_samples entries, takes all available rows.\n    \n    Args:\n        df: DataFrame containing transaction data\n        num_samples: Number of samples to take per subcategory\n        \n    Returns:\n        DataFrame with balanced samples across subcategories\n    \"\"\"\n    # Group by subcategory and sample\n    sampled_df = (\n        df.groupby(\"subcategory\")[df.columns]\n        .apply(lambda x: x.sample(min(len(x), num_samples)))\n        .reset_index(drop=True)\n    )\n    \n    # Convert subcategory to category type for efficiency\n    sampled_df[\"subcategory\"] = sampled_df[\"subcategory\"].astype(\"category\")\n    \n    return sampled_df\n\n# Sample training and test data\nTRAIN_NUM_SAMPLES = 50  # 50 samples per subcategory for training\nTEST_NUM_SAMPLES = 10   # 10 samples per subcategory for testing\n\n# Create balanced datasets\ndf_train_sampled = sample_data(df_train, TRAIN_NUM_SAMPLES)\ndf_test_sampled = sample_data(df_test, TEST_NUM_SAMPLES)\n\n# Print statistics about the sampled data\nprint(f\"Original training data: {len(df_train)} rows\")\nprint(f\"Sampled training data: {len(df_train_sampled)} rows\")\nprint(f\"Number of subcategories: {df_train_sampled['subcategory'].nunique()}\")\n\n# Show distribution of a few subcategories\nprint(\"\\nSample of subcategory counts in training data:\")\nprint(df_train_sampled['subcategory'].value_counts().head(5))","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:00.339476Z","iopub.execute_input":"2025-04-10T05:24:00.339807Z","iopub.status.idle":"2025-04-10T05:24:00.378071Z","shell.execute_reply.started":"2025-04-10T05:24:00.339771Z","shell.execute_reply":"2025-04-10T05:24:00.376632Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"## Load the subcategory and category tabe\nIn this step, I load the subcategory and category table.","metadata":{}},{"cell_type":"code","source":"import sqlite3\n\n# Connect to your database\ndb_conn = sqlite3.connect('/kaggle/working/transaction_categories.db')\ncursor = db_conn.cursor()\n\n# Create the tables\ncursor.execute('''\nCREATE TABLE IF NOT EXISTS categories (\n    category_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    name VARCHAR(100) NOT NULL UNIQUE,\n    description TEXT,\n    display_order INT DEFAULT 100,\n    is_active BOOLEAN DEFAULT 1,\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n)\n''')\n\ncursor.execute('''\nCREATE TABLE IF NOT EXISTS subcategories (\n    subcategory_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    category_id INTEGER NOT NULL,\n    name VARCHAR(100) NOT NULL,\n    description TEXT,\n    display_order INT DEFAULT 100,\n    is_active BOOLEAN DEFAULT 1,\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n    FOREIGN KEY (category_id) REFERENCES categories(category_id)\n)\n''')\n\ncursor.execute('''\nCREATE TABLE IF NOT EXISTS keyword_rules (\n    rule_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    category_id INTEGER NOT NULL,\n    subcategory_id INTEGER,\n    keyword VARCHAR(255) NOT NULL,\n    match_type VARCHAR(20) DEFAULT 'contains',\n    priority INT DEFAULT 100,\n    is_active BOOLEAN DEFAULT 1,\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n    created_by VARCHAR(100),\n    FOREIGN KEY (category_id) REFERENCES categories(category_id),\n    FOREIGN KEY (subcategory_id) REFERENCES subcategories(subcategory_id)\n)\n''')\n\ncursor.execute('''\nCREATE TABLE IF NOT EXISTS transaction_categories (\n    transaction_id VARCHAR(100) PRIMARY KEY,\n    category_id INTEGER,\n    subcategory_id INTEGER,\n    confidence_score DECIMAL(5,4),\n    categorization_method VARCHAR(50),\n    is_manually_reviewed BOOLEAN DEFAULT 0,\n    categorized_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n    FOREIGN KEY (category_id) REFERENCES categories(category_id),\n    FOREIGN KEY (subcategory_id) REFERENCES subcategories(subcategory_id)\n)\n''')\n\n# Insert main categories\ncategories = [\n    ('Food & Beverages', 'Expenses related to food and drinks', 10),\n    ('Shopping', 'Retail purchases and shopping expenses', 20),\n    ('Housing', 'Home-related expenses including rent and utilities', 30),\n    ('Transportation', 'Public and private transportation costs', 40),\n    ('Vehicle', 'Car and vehicle related expenses', 50),\n    ('Life & Entertainment', 'Leisure activities and entertainment', 60),\n    ('Communication, PC', 'Internet, phone and computer expenses', 70),\n    ('Financial expenses', 'Banking fees, loans, and financial costs', 80),\n    ('Investments', 'Investment-related transactions', 90),\n    ('Income', 'All sources of incoming money', 100),\n    ('Transfer', 'Money transfers between accounts', 110)\n]\n\ncursor.executemany('INSERT OR IGNORE INTO categories (name, description, display_order) VALUES (?, ?, ?)', categories)\n\n# Insert subcategories for Food & Beverages\nfood_subcategories = [\n    (1, 'Bar, cafe, drink, snacks', 10),\n    (1, 'Groceries', 20),\n    (1, 'Restaurant, fast-food', 30)\n]\ncursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', food_subcategories)\n\n# Insert subcategories for Shopping\nshopping_subcategories = [\n    (2, 'Clothes & Footwear', 10),\n    (2, 'Drug-store, chemist', 20),\n    (2, 'Electronics, accessories', 30),\n    (2, 'Gifts, joy', 40),\n    (2, 'Health and beauty', 50),\n    (2, 'Home, garden', 60),\n    (2, 'Jewels, accessories', 70),\n    (2, 'Kids', 80),\n    (2, 'Leisure time', 90),\n    (2, 'Pets, animals', 100),\n    (2, 'Stationery, tools', 110)\n]\ncursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', shopping_subcategories)\n\nhousing_subcategories=[\n    (3, 'Energy, utilities', 10),\n    (3, 'Maintenance, repairs', 20),\n    (3, 'Mortgage', 30),\n    (3, 'Property insurance', 40),\n    (3, 'Rent', 50),\n    (3, 'Services', 60)\n]\ncursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', housing_subcategories)\n\n\ntransportation_subcategories=[\n    (4, 'Business trips', 10),\n    (4, 'Long distance', 20),\n    (4, 'Public transport', 30),\n    (4, 'Taxi', 40)\n]\ncursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', transportation_subcategories)\n\nvehicle_subcategories=[\n    (5, 'Fuel', 10),\n    (5, 'Leasing', 20),\n    (5, 'Parking', 30),\n    (5, 'Rentals', 40),\n    (5, 'Vehicle insurance', 50),\n    (5, 'Vehicle maintenance', 60)\n]\ncursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', vehicle_subcategories)\n\nlife_subcategories=[\n    (6, 'Active sport, fitness', 10),\n    (6, 'Alcohol, tobacco', 20),\n    (6, 'Books, audio, subscriptions', 30),\n    (6, 'Charity, gifts', 40),\n    (6, 'Culture, sport events', 50),\n    (6, 'Education, development', 60),\n    (6, 'Health care, doctor', 70),\n    (6, 'Hobbies', 80),\n    (6, 'Holiday, trips, hotels', 90),\n    (6, 'Life events', 100),\n    (6, 'Lottery, gambling', 110),\n    (6, 'TV, Streaming', 120),\n    (6, 'Wellness, beauty', 130)\n]\ncursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', life_subcategories)\n\ncommunication_subcategories=[\n    (7, 'Internet', 10),\n    (7, 'Postal services', 20),\n    (7, 'Software, apps, games', 30),\n    (7, 'Telephony, mobile phone', 40)\n]\ncursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', communication_subcategories)\n\nfinancial_subcategories=[\n    (8, 'Advisory', 10),\n    (8, 'Charges, Fees', 20),\n    (8, 'Child Support', 30),\n    (8, 'Fines', 40),\n    (8, 'Insurances', 50),\n    (8, 'Loans, interests', 60),\n    (8, 'Taxes', 70)\n]\ncursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', financial_subcategories)\n\ninvestments_subcategories=[\n    (9, 'Collections', 10),\n    (9, 'Financial investments', 20),\n    (9, 'Realty', 30),\n    (9, 'Savings', 40),\n    (9, 'Vehicles, chattels', 50)\n]\ncursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', investments_subcategories)\n\nincome_subcategories=[\n    (10, 'Checks, coupons', 10),\n    (10, 'Child Support', 20),\n    (10, 'Dues & grants', 30),\n    (10, 'Gifts', 40),\n    (10, 'Interests, dividends', 50),\n    (10, 'Lending, renting', 60),\n    (10, 'Lottery, gambling', 70),\n    (10, 'Refunds (tax, purchase)', 80),\n    (10, 'Rental income', 90),\n    (10, 'Sale', 100),\n    (10, 'Wage, invoices', 110)\n]\ncursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', income_subcategories)\n\ntransfer_subcatgories=[\n    (11, 'Transfer', 10),   \n]\ncursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', transfer_subcatgories)\n\n# Commit the changes\ndb_conn.commit()\nprint(\"Database schema created successfully!\")\n\n# Close the connection when done\ndb_conn.close()","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:00.379806Z","iopub.execute_input":"2025-04-10T05:24:00.380270Z","iopub.status.idle":"2025-04-10T05:24:00.412849Z","shell.execute_reply.started":"2025-04-10T05:24:00.380223Z","shell.execute_reply":"2025-04-10T05:24:00.411804Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"## Instruct the zero-shot prompt\nI draft the prompt asking it to only use the subcategory from the loaded table.","metadata":{}},{"cell_type":"code","source":" import sqlite3\n\ndb_file = \"transaction_categories.db\"\ndb_conn = sqlite3.connect(db_file)","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:00.416956Z","iopub.execute_input":"2025-04-10T05:24:00.417336Z","iopub.status.idle":"2025-04-10T05:24:00.422342Z","shell.execute_reply.started":"2025-04-10T05:24:00.417302Z","shell.execute_reply":"2025-04-10T05:24:00.420981Z"}},"outputs":[],"execution_count":null},{"cell_type":"code","source":"from google.api_core import retry\n\n# Define a system instruction for classification with the subcategories list\nsystem_instruct = \"\"\"\nYou are a financial transaction categorization service. You will be provided with a transaction \ndescription (note) and must classify it into exactly one of the following subcategories:\n\n{}\n\nYour response must be ONLY the exact subcategory name from this list, with no additional text.\nDo not create new categories or modify existing ones.\nIf uncertain, choose the most likely subcategory from the list above.\n\"\"\"\n\n# Get the list of subcategories and format them for the prompt\nall_subcategories = sorted(df['subcategory'].unique())\nsubcategories_text = \"\\n\".join([f\"- {subcat}\" for subcat in all_subcategories])\n\n# Insert the subcategories into the system instruction\nsystem_instruct = system_instruct.format(subcategories_text)\n\n# Define a helper to retry when per-minute quota is reached\nis_retriable = lambda e: (isinstance(e, genai.errors.APIError) and e.code in {429, 503})\n\n@retry.Retry(predicate=is_retriable)\ndef predict_label(transaction_note: str) -> str:\n    \"\"\"Classify the provided transaction note into a subcategory from the predefined list.\"\"\"\n    response = client.models.generate_content(\n        model=\"gemini-2.0-flash\",\n        config=types.GenerateContentConfig(\n            system_instruction=system_instruct),\n        contents=transaction_note)\n    rc = response.candidates[0]\n    \n    # Any errors, filters, recitation, etc we can mark as a general error\n    if rc.finish_reason.name != \"STOP\":\n        return \"(error)\"\n    else:\n        # Clean up the response\n        prediction = response.text.strip()\n        \n        # Verify the prediction is from our list of subcategories\n        if prediction in all_subcategories:\n            return prediction\n        else:\n            # Find the closest matching subcategory if possible\n            for subcat in all_subcategories:\n                if subcat.lower() in prediction.lower():\n                    return subcat\n            return \"(invalid category)\"","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:00.423374Z","iopub.execute_input":"2025-04-10T05:24:00.423691Z","iopub.status.idle":"2025-04-10T05:24:00.436640Z","shell.execute_reply.started":"2025-04-10T05:24:00.423662Z","shell.execute_reply":"2025-04-10T05:24:00.435320Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"## Evaluate baseline performance\n\nNow I perform an evaluation on the available models to ensure I can measure how much the tuning helps.","metadata":{}},{"cell_type":"code","source":"import tqdm\nfrom tqdm.rich import tqdm as tqdmr\nimport warnings\n\n# Enable tqdm features on Pandas\ntqdmr.pandas()\n\n# Suppress the experimental warning\nwarnings.filterwarnings(\"ignore\", category=tqdm.TqdmExperimentalWarning)\n\n# Further sample the test data to be mindful of the free-tier quota\n# Sample a small subset of test data (adjust number as needed)\nTEST_SAMPLE_SIZE = 20\ndf_baseline_eval = df_test_sampled.sample(min(TEST_SAMPLE_SIZE, len(df_test_sampled)))\n\nprint(f\"Evaluating {len(df_baseline_eval)} transactions...\")\n\n# Make predictions using the sampled data with progress bar\ndf_baseline_eval['prediction'] = df_baseline_eval['note'].progress_apply(predict_label)\n\n# Calculate the accuracy\naccuracy = (df_baseline_eval['subcategory'] == df_baseline_eval['prediction']).mean()\nprint(f\"Baseline accuracy: {accuracy:.2%}\")\n\n# Display some examples of predictions\nprint(\"\\nSample predictions:\")\nsample_results = df_baseline_eval[['note', 'subcategory', 'prediction']].sample(min(5, len(df_baseline_eval)))\nfor idx, row in sample_results.iterrows():\n    print(f\"Transaction: {row['note'][:50]}...\")\n    print(f\"True subcategory: {row['subcategory']}\")\n    print(f\"Predicted: {row['prediction']}\")\n    print(f\"Correct: {row['subcategory'] == row['prediction']}\\n\")\n\n# Create a confusion matrix to see where the model is making mistakes\nprint(\"Most common error patterns:\")\nerror_patterns = df_baseline_eval[df_baseline_eval['subcategory'] != df_baseline_eval['prediction']]\nif len(error_patterns) > 0:\n    error_counts = error_patterns.groupby(['subcategory', 'prediction']).size().reset_index(name='count')\n    error_counts = error_counts.sort_values('count', ascending=False)\n    print(error_counts.head(5))\nelse:\n    print(\"No errors found in the evaluation set!\")","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:00.437820Z","iopub.execute_input":"2025-04-10T05:24:00.438134Z","iopub.status.idle":"2025-04-10T05:24:07.933068Z","shell.execute_reply.started":"2025-04-10T05:24:00.438089Z","shell.execute_reply":"2025-04-10T05:24:07.932305Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"## Tune my model\nNow I train the model with training data to tune it for assessment and potential use.","metadata":{}},{"cell_type":"code","source":"from collections.abc import Iterable\nimport datetime\nimport time\nimport os\n\n# 1. Prepare your transaction data for fine-tuning\nprint(\"Preparing transaction data for fine-tuning...\")\n\n# Convert the DataFrame into the format expected by the API\ntraining_examples = []\nfor _, row in df_train_sampled.iterrows():\n    training_examples.append({\n        \"textInput\": str(row['note']),\n        \"output\": str(row['subcategory'])\n    })\n\nprint(f\"Created {len(training_examples)} training examples\")\nprint(f\"Sample example - Input: '{training_examples[0]['textInput'][:50]}...'\")\nprint(f\"Sample example - Output: '{training_examples[0]['output']}'\")\n\n# 2. Prepare the dataset in the required format\ntraining_data = {\"examples\": training_examples}\n\n# 3. Set up the fine-tuning job - find existing or create new\nmodel_id = None\nTUNED_MODEL_PREFIX = 'tunedModels/transaction-category-classifier'\n\ntry:\n    # Try to read previous model ID from file\n    if os.path.exists(\"tuned_model_id.txt\"):\n        with open(\"tuned_model_id.txt\", \"r\") as f:\n            saved_model_id = f.read().strip()\n            if saved_model_id:\n                print(f\"Found previously saved model ID: {saved_model_id}\")\n                model_id = saved_model_id\n    \n    # If no saved ID, check for existing models\n    if not model_id:\n        queued_model = None\n        print(\"Checking for existing tuned models...\")\n        \n        # List models in reverse order (newest first)\n        for m in reversed(client.tunings.list()):\n            # Look for transaction classification models\n            if m.name.startswith(TUNED_MODEL_PREFIX):\n                # If there is a completed model, use it\n                if m.state.name == 'JOB_STATE_SUCCEEDED':\n                    model_id = m.name\n                    print(f'Found existing completed model to reuse: {model_id}')\n                    break\n                elif m.state.name == 'JOB_STATE_RUNNING' and not queued_model:\n                    # If there's a model still running, remember it\n                    queued_model = m.name\n                    print(f'Found model still in progress: {queued_model}')\n        \n        # Use queued model if found and no completed model\n        if not model_id and queued_model:\n            model_id = queued_model\n            print(f'Using in-progress model: {model_id}')\n    \n    # Create new model if needed\n    if not model_id:\n        print(\"Starting new fine-tuning job...\")\n        tuning_op = client.tunings.tune(\n            base_model=\"models/gemini-1.5-flash-001-tuning\",\n            training_dataset=training_data,\n            config=types.CreateTuningJobConfig(\n                tuned_model_display_name=\"transaction-category-classifier\",\n                batch_size=16,\n                epoch_count=3,\n            ),\n        )\n        \n        model_id = tuning_op.name\n        print(f\"Fine-tuning initiated. Model ID: {model_id}\")\n        print(f\"Current status: {tuning_op.state}\")\n    \n    # Save the model ID for later use\n    with open(\"tuned_model_id.txt\", \"w\") as f:\n        f.write(model_id)\n    \n    print(f\"\\nUsing model: {model_id}\")\n    \nexcept Exception as e:\n    print(f\"Error in fine-tuning process: {e}\")","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:48:56.387205Z","iopub.execute_input":"2025-04-10T05:48:56.388511Z","iopub.status.idle":"2025-04-10T05:48:58.145557Z","shell.execute_reply.started":"2025-04-10T05:48:56.388457Z","shell.execute_reply":"2025-04-10T05:48:58.144833Z"}},"outputs":[{"name":"stdout","text":"Preparing transaction data for fine-tuning...\nCreated 1687 training examples\nSample example - Input: '02 DEC 20 - $98.00 LULULEMON ATHLETICA AUSTRAlbert...'\nSample example - Output: 'Active sport, fitness'\nChecking for existing tuned models...\nStarting new fine-tuning job...\n","output_type":"stream"},{"name":"stderr","text":"/tmp/ipykernel_30/3441513278.py:64: ExperimentalWarning: The SDK's tuning implementation is experimental, and may change in future versions.\n  tuning_op = client.tunings.tune(\n","output_type":"stream"},{"name":"stdout","text":"Fine-tuning initiated. Model ID: tunedModels/transactioncategoryclassifier-ylbi7zvcbj\nCurrent status: JOB_STATE_QUEUED\n\nUsing model: tunedModels/transactioncategoryclassifier-ylbi7zvcbj\n","output_type":"stream"}],"execution_count":290},{"cell_type":"markdown","source":"## Monitoring progress\nHere I monitor whether this model has been tuned and ready to use.","metadata":{}},{"cell_type":"code","source":"# 4. Monitor the fine-tuning progress\nstart_time = datetime.datetime.now(datetime.timezone.utc)\ntuned_model = client.tunings.get(name=model_id)\n\nwhile not tuned_model.has_ended:\n    print(f\"Current state: {tuned_model.state.name}\")\n    if hasattr(tuned_model, 'progress'):\n        print(f\"Progress: {tuned_model.progress}%\")\n    \n    time.sleep(60)  # Check every minute\n    tuned_model = client.tunings.get(name=model_id)\n\nprint(f\"Done! The model state is: {tuned_model.state.name}\")\n\nif not tuned_model.has_succeeded and tuned_model.error:\n    print(\"Error:\", tuned_model.error)","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T06:03:21.468963Z","iopub.execute_input":"2025-04-10T06:03:21.469361Z","iopub.status.idle":"2025-04-10T06:15:36.513980Z","shell.execute_reply.started":"2025-04-10T06:03:21.469329Z","shell.execute_reply":"2025-04-10T06:15:36.512876Z"}},"outputs":[{"name":"stdout","text":"Current state: JOB_STATE_RUNNING\nCurrent state: JOB_STATE_RUNNING\nCurrent state: JOB_STATE_RUNNING\nCurrent state: JOB_STATE_RUNNING\nCurrent state: JOB_STATE_RUNNING\nCurrent state: JOB_STATE_RUNNING\nCurrent state: JOB_STATE_RUNNING\nCurrent state: JOB_STATE_RUNNING\nCurrent state: JOB_STATE_RUNNING\nCurrent state: JOB_STATE_RUNNING\nCurrent state: JOB_STATE_RUNNING\nCurrent state: JOB_STATE_RUNNING\nDone! The model state is: JOB_STATE_SUCCEEDED\n","output_type":"stream"}],"execution_count":293},{"cell_type":"markdown","source":"## Evaluate Tuned Model\nHere I test and evaluate the performance of the tuned model.","metadata":{}},{"cell_type":"code","source":"# 5. Test the tuned model with a sample transaction\ndef categorize_transaction(transaction_note):\n    \"\"\"Use the fine-tuned model to categorize a transaction.\"\"\"\n    response = client.models.generate_content(\n        model=model_id,\n        contents=transaction_note,\n        config=types.GenerateContentConfig(\n            temperature=0.0,  # Use deterministic output for classification\n            max_output_tokens=10,  # Keep it short, we just need the category\n        )\n    )\n    \n    if response.candidates and response.candidates[0].content:\n        return response.candidates[0].content.parts[0].text.strip()\n    else:\n        return \"(error)\"\n\n# Test with a sample transaction\nsample_transaction = \"AMAZON PRIME MEMBERSHIP ANNUAL RENEWAL\"\npredicted_category = categorize_transaction(sample_transaction)\nprint(f\"Transaction: {sample_transaction}\")\nprint(f\"Predicted category: {predicted_category}\")","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T06:20:22.978683Z","iopub.execute_input":"2025-04-10T06:20:22.979080Z","iopub.status.idle":"2025-04-10T06:20:25.198690Z","shell.execute_reply.started":"2025-04-10T06:20:22.979045Z","shell.execute_reply":"2025-04-10T06:20:25.197368Z"}},"outputs":[{"name":"stdout","text":"Transaction: AMAZON PRIME MEMBERSHIP ANNUAL RENEWAL\nPredicted category: Software, apps, games\n","output_type":"stream"}],"execution_count":296},{"cell_type":"code","source":"# 6. Evaluate the model on test data\nimport tqdm\nfrom tqdm.rich import tqdm as tqdmr\nimport warnings\n\n# Enable tqdm features on Pandas\ntqdmr.pandas()\n\n# Suppress the experimental warning\nwarnings.filterwarnings(\"ignore\", category=tqdm.TqdmExperimentalWarning)\n\n# Sample a subset of test data for evaluation\nTEST_SAMPLE_SIZE = 20\ndf_eval = df_test_sampled.sample(min(TEST_SAMPLE_SIZE, len(df_test_sampled)))\n\nprint(f\"Evaluating on {len(df_eval)} test transactions...\")\n\n# Make predictions with progress bar\ndf_eval['prediction'] = df_eval['note'].progress_apply(categorize_transaction)\n\n# Calculate accuracy\naccuracy = (df_eval['subcategory'] == df_eval['prediction']).mean()\nprint(f\"Model accuracy: {accuracy:.2%}\")\n\n# Display some examples\nprint(\"\\nSample predictions:\")\nfor idx, row in df_eval.sample(min(5, len(df_eval))).iterrows():\n    print(f\"Transaction: {row['note'][:50]}...\")\n    print(f\"True category: {row['subcategory']}\")\n    print(f\"Predicted: {row['prediction']}\")\n    print(f\"Correct: {row['subcategory'] == row['prediction']}\\n\")\n\n# Show error analysis\nerrors = df_eval[df_eval['subcategory'] != df_eval['prediction']]\nif len(errors) > 0:\n    print(f\"Found {len(errors)} misclassifications\")\n    print(\"Most common error patterns:\")\n    error_matrix = pd.crosstab(\n        errors['subcategory'], \n        errors['prediction'], \n        rownames=['True'], \n        colnames=['Predicted']\n    )\n    print(error_matrix)","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T06:23:26.274584Z","iopub.execute_input":"2025-04-10T06:23:26.275139Z","iopub.status.idle":"2025-04-10T06:23:36.087313Z","shell.execute_reply.started":"2025-04-10T06:23:26.275071Z","shell.execute_reply":"2025-04-10T06:23:36.086290Z"}},"outputs":[{"output_type":"display_data","data":{"text/plain":"Output()","application/vnd.jupyter.widget-view+json":{"version_major":2,"version_minor":0,"model_id":"4a343ff6134c4f4ca66d80b51299d26f"}},"metadata":{}},{"name":"stdout","text":"Evaluating on 20 test transactions...\n","output_type":"stream"},{"output_type":"display_data","data":{"text/plain":"","text/html":"<pre style=\"white-space:pre;overflow-x:auto;line-height:normal;font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace\"></pre>\n"},"metadata":{}},{"output_type":"display_data","data":{"text/plain":"\n","text/html":"<pre style=\"white-space:pre;overflow-x:auto;line-height:normal;font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace\">\n</pre>\n"},"metadata":{}},{"name":"stdout","text":"Model accuracy: 50.00%\n\nSample predictions:\nTransaction: 2% CASHBACK - ENJOY RENAISSANCE SUPERMARKE 14MAR20...\nTrue category: Refunds (tax, purchase)\nPredicted: Refunds (tax, purchase)\nCorrect: True\n\nTransaction: AMAZON AU SYDNEY SOUTH Headphone...\nTrue category: Electronics, accessories\nPredicted: Electronics, accessories\nCorrect: True\n\nTransaction: Amazon AU +XXX1072au Belkin AirTag Case with Clip,...\nTrue category: Electronics, accessories\nPredicted: Electronics, accessories\nCorrect: True\n\nTransaction: QENERGY...\nTrue category: Energy, utilities\nPredicted: Energy, utilities\nCorrect: True\n\nTransaction: AMAZON AU SYDNEY SOUTH  Pepsi Max Cola Soft Drink,...\nTrue category: Bar, cafe, drink, snacks\nPredicted: Groceries\nCorrect: False\n\nFound 10 misclassifications\nMost common error patterns:\nPredicted                 Great!  Groceries  Hobbies  Hotel, motel, inns  \\\nTrue                                                                       \nBar, cafe, drink, snacks       0          1        0                   0   \nFinancial investments          2          0        0                   0   \nFines                          0          0        0                   0   \nGifts, joy                     0          0        0                   0   \nHoliday, trips, hotels         0          1        0                   1   \nMortgage                       0          0        0                   0   \nRestaurant, fast-food          0          0        1                   0   \nVehicle insurance              0          0        1                   0   \n\nPredicted                 Mortgage, loans, interests  Rentals  \\\nTrue                                                            \nBar, cafe, drink, snacks                           0        0   \nFinancial investments                              0        0   \nFines                                              0        1   \nGifts, joy                                         0        0   \nHoliday, trips, hotels                             0        0   \nMortgage                                           1        0   \nRestaurant, fast-food                              0        0   \nVehicle insurance                                  0        0   \n\nPredicted                 Restaurant, fast-food  \nTrue                                             \nBar, cafe, drink, snacks                      0  \nFinancial investments                         0  \nFines                                         0  \nGifts, joy                                    1  \nHoliday, trips, hotels                        0  \nMortgage                                      0  \nRestaurant, fast-food                         0  \nVehicle insurance                             0  \n","output_type":"stream"}],"execution_count":299},{"cell_type":"code","source":"# 4. Monitor the fine-tuning progress\nMAX_WAIT = datetime.timedelta(minutes=10)\nprint(f\"Monitoring fine-tuning progress for up to {MAX_WAIT.total_seconds()/60} minutes...\")\n\nstart_time = datetime.datetime.now(datetime.timezone.utc)\ntuned_model = client.tunings.get(name=model_id)\n\nwhile not tuned_model.has_ended:\n    print(f\"Current state: {tuned_model.state.name}\")\n    if hasattr(tuned_model, 'progress'):\n        print(f\"Progress: {tuned_model.progress}%\")\n    \n    time.sleep(60)  # Check every minute\n    tuned_model = client.tunings.get(name=model_id)\n    \n    # Don't wait too long\n    if datetime.datetime.now(datetime.timezone.utc) - start_time > MAX_WAIT:\n        print(\"Maximum wait time reached. Using the model in its current state.\")\n        break\n\nprint(f\"Done! The model state is: {tuned_model.state.name}\")\n\nif not tuned_model.has_succeeded and tuned_model.error:\n    print(\"Error:\", tuned_model.error)","metadata":{"trusted":true},"outputs":[],"execution_count":null},{"cell_type":"code","source":"print(\"Loading training data...\")\ntraining_file_path = \"/kaggle/input/training/categorized_transaction.csv\"\n\ntry:\n    df_training = pd.read_csv(training_file_path)\n    print(f\"Successfully loaded {len(df_training)} training examples\")\n    \n    # Print sample to verify columns\n    print(\"\\nSample of training data:\")\n    print(df_training.head(2))\n    print(\"\\nColumns in training data:\", df_training.columns.tolist())\n    \nexcept FileNotFoundError:\n    print(f\"ERROR: Could not find file at {training_file_path}\")\n    print(\"Please ensure your CSV is uploaded to the correct location\")","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:34:08.597504Z","iopub.execute_input":"2025-04-10T05:34:08.597912Z","iopub.status.idle":"2025-04-10T05:34:08.630764Z","shell.execute_reply.started":"2025-04-10T05:34:08.597878Z","shell.execute_reply":"2025-04-10T05:34:08.629616Z"}},"outputs":[{"name":"stdout","text":"Loading training data...\nSuccessfully loaded 12449 training examples\n\nSample of training data:\n             subcategory                                               note\n0  Active sport, fitness  AMAZON AU      SYDNEY SOUTH CREDIT CARD PURCHA...\n1  Active sport, fitness  02 DEC 20 - $98.00 LULULEMON ATHLETICA AUSTRAl...\n\nColumns in training data: ['subcategory', 'note']\n","output_type":"stream"}],"execution_count":285},{"cell_type":"code","source":"print(\"\\nCreating training examples...\")\ntraining_examples = []\n\n# Check if the required columns exist\nif 'note' not in df_training.columns or 'subcategory' not in df_training.columns:\n    print(\"ERROR: Training data must have 'note' and 'subcategory' columns\")\n    print(f\"Available columns: {df_training.columns.tolist()}\")\nelse:\n    # Filter out rows with NaN values in the 'note' column\n    df_valid = df_training.dropna(subset=['note'])\n    \n    print(f\"Original data: {len(df_training)} rows\")\n    print(f\"After removing NaN values: {len(df_valid)} rows\")\n    print(f\"Removed {len(df_training) - len(df_valid)} rows with missing descriptions\")\n    \n    for _, row in df_valid.iterrows():\n        # Create training example with correct fields\n        training_examples.append({\n            \"textInput\": str(row['note']),  # Ensure it's a string\n            \"output\": str(row['subcategory'])  # Ensure it's a string\n        })\n    \n    print(f\"Created {len(training_examples)} training examples\")\n    \n    # Optionally show a few examples\n    print(\"\\nSample training examples:\")\n    for example in training_examples[:3]:\n        print(f\"Input: '{example['textInput'][:50]}...'\")\n        print(f\"Output: '{example['output']}'\")\n        print(\"---\")","metadata":{"trusted":true},"outputs":[],"execution_count":null},{"cell_type":"code","source":"from collections.abc import Iterable\n\nif len(training_examples) > 0:\n    print(\"\\nPreparing for fine-tuning process...\")\n    \n    # Prepare training data in the required format\n    training_data = {\"examples\": training_examples}\n    \n    # Check for existing model to reuse\n    model_id = None\n    \n    try:\n        # Try to read previous model ID from file\n        try:\n            with open(\"tuned_model_id.txt\", \"r\") as f:\n                saved_model_id = f.read().strip()\n                if saved_model_id:\n                    print(f\"Found previously saved model ID: {saved_model_id}\")\n                    model_id = saved_model_id\n        except FileNotFoundError:\n            print(\"No previously saved model ID found.\")\n        \n        # If no saved ID, check for existing models\n        if not model_id:\n            queued_model = None\n            print(\"Checking for existing tuned models...\")\n            \n            # List models in reverse order (newest first)\n            for m in reversed(client.tunings.list()):\n                # Look for models with your specific format tunedModels/personal-transaction-classifier-*\n                if m.name.startswith('tunedModels/personal-transaction-classifier-'):\n                    # If there is a completed model, use it\n                    if m.state.name == 'JOB_STATE_SUCCEEDED':\n                        model_id = m.name\n                        print(f'Found existing completed model to reuse: {model_id}')\n                        break\n                    elif m.state.name == 'JOB_STATE_RUNNING' and not queued_model:\n                        # If there's a model still running, remember it\n                        queued_model = m.name\n                        print(f'Found model still in progress: {queued_model}')\n            \n            # Use queued model if found and no completed model\n            if not model_id and queued_model:\n                model_id = queued_model\n                print(f'Using in-progress model: {model_id}')\n        \n        # Create new model if needed\n        if not model_id:\n            print(\"Starting new fine-tuning job...\")\n            tuning_op = client.tunings.tune(\n                base_model=\"models/gemini-1.5-flash-001-tuning\",\n                training_dataset=training_data,\n                config=types.CreateTuningJobConfig(\n                    tuned_model_display_name=\"personal-transaction-classifier\",  # Lowercase to match your existing model\n                    batch_size=16,\n                    epoch_count=3,\n                ),\n            )\n            \n            model_id = tuning_op.name\n            print(f\"Fine-tuning initiated. Model ID: {model_id}\")\n            print(f\"Current status: {tuning_op.state}\")\n            \n            # Poll for status updates (optional)\n            print(\"Initial training status:\")\n            print(f\"  - State: {tuning_op.state}\")\n            print(f\"  - Create time: {tuning_op.create_time}\")\n            if hasattr(tuning_op, 'progress') and tuning_op.progress:\n                print(f\"  - Progress: {tuning_op.progress}%\")\n        \n        # Save the model ID for later use\n        with open(\"tuned_model_id.txt\", \"w\") as f:\n            f.write(model_id)\n        \n        print(f\"\\nUsing model: {model_id}\")\n        print(\"This ID has been saved and will be used for predictions\")\n        \n    except Exception as e:\n        print(f\"Error in fine-tuning process: {e}\")\nelse:\n    print(\"No valid training examples created. Please fix the issues above.\")","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:32:17.297768Z","iopub.execute_input":"2025-04-10T05:32:17.298188Z","iopub.status.idle":"2025-04-10T05:32:17.338019Z","shell.execute_reply.started":"2025-04-10T05:32:17.298150Z","shell.execute_reply":"2025-04-10T05:32:17.336455Z"}},"outputs":[{"traceback":["\u001b[0;31m---------------------------------------------------------------------------\u001b[0m","\u001b[0;31mNameError\u001b[0m                                 Traceback (most recent call last)","Cell \u001b[0;32mIn[284], line 3\u001b[0m\n\u001b[1;32m      1\u001b[0m \u001b[38;5;28;01mfrom\u001b[39;00m \u001b[38;5;21;01mcollections\u001b[39;00m\u001b[38;5;21;01m.\u001b[39;00m\u001b[38;5;21;01mabc\u001b[39;00m \u001b[38;5;28;01mimport\u001b[39;00m Iterable\n\u001b[0;32m----> 3\u001b[0m \u001b[38;5;28;01mif\u001b[39;00m \u001b[38;5;28mlen\u001b[39m(\u001b[43mtraining_examples\u001b[49m) \u001b[38;5;241m>\u001b[39m \u001b[38;5;241m0\u001b[39m:\n\u001b[1;32m      4\u001b[0m     \u001b[38;5;28mprint\u001b[39m(\u001b[38;5;124m\"\u001b[39m\u001b[38;5;130;01m\\n\u001b[39;00m\u001b[38;5;124mPreparing for fine-tuning process...\u001b[39m\u001b[38;5;124m\"\u001b[39m)\n\u001b[1;32m      6\u001b[0m     \u001b[38;5;66;03m# Prepare training data in the required format\u001b[39;00m\n","\u001b[0;31mNameError\u001b[0m: name 'training_examples' is not defined"],"ename":"NameError","evalue":"name 'training_examples' is not defined","output_type":"error"}],"execution_count":284},{"cell_type":"code","source":"# Get valid subcategories from the database\ndef get_valid_subcategories():\n    \"\"\"Get all valid subcategory names from the database.\"\"\"\n    cursor = db_conn.cursor()\n    cursor.execute(\"SELECT DISTINCT name FROM subcategories\")\n    subcategories = cursor.fetchall()\n    # Return a deduplicated list of subcategory names\n    return sorted(list(set([subcat[0] for subcat in subcategories])))","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:07.934217Z","iopub.execute_input":"2025-04-10T05:24:07.934540Z","iopub.status.idle":"2025-04-10T05:24:07.940212Z","shell.execute_reply.started":"2025-04-10T05:24:07.934506Z","shell.execute_reply":"2025-04-10T05:24:07.939149Z"}},"outputs":[],"execution_count":null},{"cell_type":"code","source":"valid_subcategories = get_valid_subcategories()\n\ndef predict_label(transaction_note):\n    \"\"\"\n    Predict the subcategory for a transaction using direct approach with predefined categories.\n    \n    Args:\n        transaction_note: The transaction description to categorize\n        \n    Returns:\n        The predicted subcategory name\n    \"\"\"\n    # Build the prompt with the valid subcategories\n    subcategory_list = \"\\n\".join(valid_subcategories)\n    \n    direct_instruction = f\"\"\"\nYou are a financial transaction categorizer. Your task is to categorize transaction descriptions into exactly ONE subcategory from this list:\n\n{subcategory_list}\n\nReturn ONLY the subcategory name as a string, nothing else. Do not make up new subcategories or modify existing ones. \n\"\"\"\n\n    # Call the model directly\n    response = client.models.generate_content(\n        model=\"gemini-2.0-flash\",\n        config=types.GenerateContentConfig(\n            system_instruction=direct_instruction,\n            temperature=0.0,\n            top_p=1.0,\n            top_k=1,\n            max_output_tokens=10,\n        ),\n        contents=f\"Categorize this transaction: {transaction_note}\"\n    )\n    \n    # Extract the prediction from the response\n    if response.candidates and response.candidates[0].content:\n        prediction = response.candidates[0].content.parts[0].text.strip()\n        return prediction\n    else:\n        return \"Error: No response generated\"\n    return prediction","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:07.941350Z","iopub.execute_input":"2025-04-10T05:24:07.941590Z","iopub.status.idle":"2025-04-10T05:24:07.960484Z","shell.execute_reply.started":"2025-04-10T05:24:07.941566Z","shell.execute_reply":"2025-04-10T05:24:07.959259Z"}},"outputs":[],"execution_count":null},{"cell_type":"code","source":"def test_multiple_transactions(df_test_sampled, num_samples=5):\n    \"\"\"\n    Test the model on multiple transactions and calculate accuracy.\n    \n    Args:\n        df_test_sampled: DataFrame containing test data\n        num_samples: Number of transactions to test\n    \n    Returns:\n        Dictionary with test results and accuracy\n    \"\"\"\n    # Ensure we don't try to test more samples than we have\n    num_samples = min(num_samples, len(df_test_sampled))\n    \n    results = []\n    correct_count = 0\n    \n    print(f\"Testing {num_samples} transactions:\")\n    print(\"=\" * 50)\n    \n    # Test each sample\n    for i in range(num_samples):\n        sample_row = df_test_sampled.iloc[i]\n        sample_note = sample_row['note']\n        sample_subcategory = sample_row['subcategory']\n        \n        # Make prediction\n        prediction = predict_label(sample_note)\n        \n        # Check if prediction is correct\n        is_correct = prediction == sample_subcategory\n        if is_correct:\n            correct_count += 1\n        \n        # Store result\n        results.append({\n            \"note\": sample_note,\n            \"true_subcategory\": sample_subcategory,\n            \"predicted_subcategory\": prediction,\n            \"correct\": is_correct\n        })\n        \n        # Print result\n        print(f\"Transaction {i+1}:\")\n        print(f\"Note: {sample_note}\")\n        print(f\"True subcategory: {sample_subcategory}\")\n        print(f\"Predicted subcategory: {prediction}\")\n        print(f\"Correct: {is_correct}\")\n        print(\"-\" * 50)\n    \n    # Calculate accuracy\n    accuracy = correct_count / num_samples\n    print(f\"Overall accuracy: {accuracy:.2%} ({correct_count}/{num_samples})\")\n    \n    return {\n        \"results\": results,\n        \"accuracy\": accuracy\n    }\n\n# Run the test with 5 samples\ntest_results = test_multiple_transactions(df_test_sampled, num_samples=5)","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:07.961764Z","iopub.execute_input":"2025-04-10T05:24:07.962041Z","iopub.status.idle":"2025-04-10T05:24:10.012884Z","shell.execute_reply.started":"2025-04-10T05:24:07.962017Z","shell.execute_reply":"2025-04-10T05:24:10.011500Z"}},"outputs":[],"execution_count":null},{"cell_type":"code","source":"from google.api_core import retry\n\n# You can use a system instruction to do more direct prompting, and get a\n# more succinct answer.\n\nsystem_instruct = \"\"\"\nYou are a classification service. You will be passed note that represents\ntranscation details and you must respond with the subcategory from which the transaction\nbest fit.\n\"\"\"\n\n# Define a helper to retry when per-minute quota is reached.\nis_retriable = lambda e: (isinstance(e, genai.errors.APIError) and e.code in {429, 503})\n\n# If you want to evaluate your own technique, replace this body of this function\n# with your model, prompt and other code and return the predicted answer.\n@retry.Retry(predicate=is_retriable)\ndef predict_label(post: str) -> str:\n    response = client.models.generate_content(\n        model=\"gemini-1.5-flash-001\",\n        config=types.GenerateContentConfig(\n            system_instruction=system_instruct),\n        contents=post)\n\n    rc = response.candidates[0]\n\n    # Any errors, filters, recitation, etc we can mark as a general error\n    if rc.finish_reason.name != \"STOP\":\n        return \"(error)\"\n    else:\n        # Clean up the response.\n        return response.text.strip()\n\n\nprediction = predict_label(sample_row)\n\nprint(prediction)\nprint()\nprint(\"Correct!\" if prediction == sample_label else \"Incorrect.\")","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:10.014400Z","iopub.execute_input":"2025-04-10T05:24:10.014719Z","iopub.status.idle":"2025-04-10T05:24:10.134338Z","shell.execute_reply.started":"2025-04-10T05:24:10.014689Z","shell.execute_reply":"2025-04-10T05:24:10.132914Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"You can use the prompt engineering techniques you have learned this week to induce the model to perform the desired task. Try some of your own ideas and see what is effective, or check out the following cells for different approaches. Note that they have different levels of effectiveness!","metadata":{}},{"cell_type":"code","source":"# Ask the model directly in a zero-shot prompt.\n\nprompt = \"From what subcategory does the following message originate?\"\nbaseline_response = client.models.generate_content(\n    model=\"gemini-2.0-flash-001\",\n    contents=[prompt, sample_row])\nprint(baseline_response.text)","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:10.135088Z","iopub.status.idle":"2025-04-10T05:24:10.135422Z","shell.execute_reply.started":"2025-04-10T05:24:10.135285Z","shell.execute_reply":"2025-04-10T05:24:10.135301Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"This technique still produces quite a verbose response. You could try and parse out the relevant text, or refine the prompt even further.","metadata":{}},{"cell_type":"code","source":"from google.api_core import retry\n\n# You can use a system instruction to do more direct prompting, and get a\n# more succinct answer.\n\nsystem_instruct = \"\"\"\nYou are a classification service. You will be passed input that represents\na newsgroup post and you must respond with the newsgroup from which the post\noriginates.\n\"\"\"\n\n# Define a helper to retry when per-minute quota is reached.\nis_retriable = lambda e: (isinstance(e, genai.errors.APIError) and e.code in {429, 503})\n\n# If you want to evaluate your own technique, replace this body of this function\n# with your model, prompt and other code and return the predicted answer.\n@retry.Retry(predicate=is_retriable)\ndef predict_label(post: str) -> str:\n    response = client.models.generate_content(\n        model=\"gemini-1.5-flash-001\",\n        config=types.GenerateContentConfig(\n            system_instruction=system_instruct),\n        contents=post)\n\n    rc = response.candidates[0]\n\n    # Any errors, filters, recitation, etc we can mark as a general error\n    if rc.finish_reason.name != \"STOP\":\n        return \"(error)\"\n    else:\n        # Clean up the response.\n        return response.text.strip()\n\n\nprediction = predict_label(sample_row)\n\nprint(prediction)\nprint()\nprint(\"Correct!\" if prediction == sample_label else \"Incorrect.\")","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:10.136487Z","iopub.status.idle":"2025-04-10T05:24:10.136762Z","shell.execute_reply.started":"2025-04-10T05:24:10.136633Z","shell.execute_reply":"2025-04-10T05:24:10.136646Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"Now run a short evaluation using the function defined above. The test set is further sampled to ensure the experiment runs smoothly on the API's free tier. In practice you would evaluate over the whole set.","metadata":{}},{"cell_type":"code","source":"import tqdm\nfrom tqdm.rich import tqdm as tqdmr\nimport warnings\n\n# Enable tqdm features on Pandas.\ntqdmr.pandas()\n\n# But suppress the experimental warning\nwarnings.filterwarnings(\"ignore\", category=tqdm.TqdmExperimentalWarning)\n\n\n# Further sample the test data to be mindful of the free-tier quota.\ndf_baseline_eval = sample_data(df_test, 2, '.*')\n\n# Make predictions using the sampled data.\ndf_baseline_eval['Prediction'] = df_baseline_eval['Text'].progress_apply(predict_label)\n\n# And calculate the accuracy.\naccuracy = (df_baseline_eval[\"Class Name\"] == df_baseline_eval[\"Prediction\"]).sum() / len(df_baseline_eval)\nprint(f\"Accuracy: {accuracy:.2%}\")","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:10.137974Z","iopub.status.idle":"2025-04-10T05:24:10.138295Z","shell.execute_reply.started":"2025-04-10T05:24:10.138141Z","shell.execute_reply":"2025-04-10T05:24:10.138161Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"Now take a look at the dataframe to compare the predictions with the labels.","metadata":{}},{"cell_type":"code","source":"df_baseline_eval","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:10.139619Z","iopub.status.idle":"2025-04-10T05:24:10.139877Z","shell.execute_reply.started":"2025-04-10T05:24:10.139758Z","shell.execute_reply":"2025-04-10T05:24:10.139771Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"## Tune a custom model\n\nIn this example you'll use tuning to create a model that requires no prompting or system instructions and outputs succinct text from the classes you provide in the training data.\n\nThe data contains both input text (the processed posts) and output text (the category, or newsgroup), that you can use to start tuning a model.\n\nWhen calling `tune()`, you can specify model tuning hyperparameters too:\n - `epoch_count`: defines how many times to loop through the data,\n - `batch_size`: defines how many rows to process in a single step, and\n - `learning_rate`: defines the scaling factor for updating model weights at each step.\n\nYou can also choose to omit them and use the defaults. [Learn more](https://developers.google.com/machine-learning/crash-course/linear-regression/hyperparameters) about these parameters and how they work. For this example these parameters were selected by running some tuning jobs and selecting parameters that converged efficiently.\n\nThis example will start a new tuning job, but only if one does not already exist. This allows you to leave this codelab and come back later - re-running this step will find your last model.","metadata":{"id":"Ok7ugrLzcghX"}},{"cell_type":"code","source":"from collections.abc import Iterable\nimport random\n\n\n# Convert the data frame into a dataset suitable for tuning.\ninput_data = {'examples': \n    df_train[['Text', 'Class Name']]\n      .rename(columns={'Text': 'textInput', 'Class Name': 'output'})\n      .to_dict(orient='records')\n }\n\n# If you are re-running this lab, add your model_id here.\nmodel_id = None\n\n# Or try and find a recent tuning job.\nif not model_id:\n  queued_model = None\n  # Newest models first.\n  for m in reversed(client.tunings.list()):\n    # Only look at newsgroup classification models.\n    if m.name.startswith('tunedModels/newsgroup-classification-model'):\n      # If there is a completed model, use the first (newest) one.\n      if m.state.name == 'JOB_STATE_SUCCEEDED':\n        model_id = m.name\n        print('Found existing tuned model to reuse.')\n        break\n\n      elif m.state.name == 'JOB_STATE_RUNNING' and not queued_model:\n        # If there's a model still queued, remember the most recent one.\n        queued_model = m.name\n  else:\n    if queued_model:\n      model_id = queued_model\n      print('Found queued model, still waiting.')\n\n\n# Upload the training data and queue the tuning job.\nif not model_id:\n    tuning_op = client.tunings.tune(\n        base_model=\"models/gemini-1.5-flash-001-tuning\",\n        training_dataset=input_data,\n        config=types.CreateTuningJobConfig(\n            tuned_model_display_name=\"Newsgroup classification model\",\n            batch_size=16,\n            epoch_count=2,\n        ),\n    )\n\n    print(tuning_op.state)\n    model_id = tuning_op.name\n\nprint(model_id)","metadata":{"id":"pWOZlspfY8dV","trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:10.140801Z","iopub.status.idle":"2025-04-10T05:24:10.141049Z","shell.execute_reply.started":"2025-04-10T05:24:10.140925Z","shell.execute_reply":"2025-04-10T05:24:10.140943Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"This has created a tuning job that will run in the background. To inspect the progress of the tuning job, run this cell to plot the current status and loss curve. Once the status reaches `ACTIVE`, tuning is complete and the model is ready to use.\n\nTuning jobs are queued, so it may look like no training steps have been taken initially but it will progress. Tuning can take anywhere from a few minutes to multiple hours, depending on factors like your dataset size and how busy the tuning infrastrature is. Why not treat yourself to a nice cup of tea while you wait, or come and say \"Hi!\" in the group [Discord](https://discord.com/invite/kaggle).\n\nIt is safe to stop this cell at any point. It will not stop the tuning job.\n\n**IMPORTANT**: Due to the high volume of users doing this course, tuning jobs may be queued for many hours. Take a note of your tuned model ID above (`tunedModels/...`) so you can come back to it tomorrow. In the meantime, check out the [Search grounding](https://www.kaggle.com/code/markishere/day-4-google-search-grounding/) codelab. If you want to try tuning a local LLM, check out [the fine-tuning guides for tuning a Gemma model](https://ai.google.dev/gemma/docs/tune).","metadata":{"id":"NQ3YZ2MBubCY"}},{"cell_type":"code","source":"import datetime\nimport time\n\n\nMAX_WAIT = datetime.timedelta(minutes=10)\n\nwhile not (tuned_model := client.tunings.get(name=model_id)).has_ended:\n\n    print(tuned_model.state)\n    time.sleep(60)\n\n    # Don't wait too long. Use a public model if this is going to take a while.\n    if datetime.datetime.now(datetime.timezone.utc) - tuned_model.create_time > MAX_WAIT:\n        print(\"Taking a shortcut, using a previously prepared model.\")\n        model_id = \"tunedModels/newsgroup-classification-model-ltenbi1b\"\n        tuned_model = client.tunings.get(name=model_id)\n        break\n\n\nprint(f\"Done! The model state is: {tuned_model.state.name}\")\n\nif not tuned_model.has_succeeded and tuned_model.error:\n    print(\"Error:\", tuned_model.error)","metadata":{"id":"c4ef5f13692d","trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:10.142820Z","iopub.status.idle":"2025-04-10T05:24:10.143147Z","shell.execute_reply.started":"2025-04-10T05:24:10.142982Z","shell.execute_reply":"2025-04-10T05:24:10.142996Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"## Use the new model\n\nNow that you have a tuned model, try it out with custom data. You use the same API as a normal Gemini API interaction, but you specify your new model as the model name, which will start with `tunedModels/`.","metadata":{"id":"9-qiIdK4u80z"}},{"cell_type":"code","source":"new_text = \"\"\"\nFirst-timer looking to get out of here.\n\nHi, I'm writing about my interest in travelling to the outer limits!\n\nWhat kind of craft can I buy? What is easiest to access from this 3rd rock?\n\nLet me know how to do that please.\n\"\"\"\n\nresponse = client.models.generate_content(\n    model=model_id, contents=new_text)\n\nprint(response.text)","metadata":{"id":"hyO2-MXLvM6a","trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:10.144577Z","iopub.status.idle":"2025-04-10T05:24:10.144864Z","shell.execute_reply.started":"2025-04-10T05:24:10.144730Z","shell.execute_reply":"2025-04-10T05:24:10.144745Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"### Evaluation\n\nYou can see that the model outputs labels that correspond to those in the training data, and without any system instructions or prompting, which is already a great improvement. Now see how well it performs on the test set.\n\nNote that there is no parallelism in this example; classifying the test sub-set will take a few minutes.","metadata":{"id":"xajLek9DySH_"}},{"cell_type":"code","source":"@retry.Retry(predicate=is_retriable)\ndef classify_text(text: str) -> str:\n    \"\"\"Classify the provided text into a known newsgroup.\"\"\"\n    response = client.models.generate_content(\n        model=model_id, contents=text)\n    rc = response.candidates[0]\n\n    # Any errors, filters, recitation, etc we can mark as a general error\n    if rc.finish_reason.name != \"STOP\":\n        return \"(error)\"\n    else:\n        return rc.content.parts[0].text\n\n\n# The sampling here is just to minimise your quota usage. If you can, you should\n# evaluate the whole test set with `df_model_eval = df_test.copy()`.\ndf_model_eval = sample_data(df_test, 4, '.*')\n\ndf_model_eval[\"Prediction\"] = df_model_eval[\"Text\"].progress_apply(classify_text)\n\naccuracy = (df_model_eval[\"Class Name\"] == df_model_eval[\"Prediction\"]).sum() / len(df_model_eval)\nprint(f\"Accuracy: {accuracy:.2%}\")","metadata":{"id":"6T2Y3ZApvbMw","trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:10.146418Z","iopub.status.idle":"2025-04-10T05:24:10.146686Z","shell.execute_reply.started":"2025-04-10T05:24:10.146563Z","shell.execute_reply":"2025-04-10T05:24:10.146576Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"## Compare token usage\n\nAI Studio and the Gemini API provide model tuning at no cost, however normal limits and charges apply for *use* of a tuned model.\n\nThe size of the input prompt and other generation config like system instructions, as well as the number of generated output tokens, all contribute to the overall cost of a request.","metadata":{}},{"cell_type":"code","source":"# Calculate the *input* cost of the baseline model with system instructions.\nsysint_tokens = client.models.count_tokens(\n    model='gemini-1.5-flash-001', contents=[system_instruct, sample_row]\n).total_tokens\nprint(f'System instructed baseline model: {sysint_tokens} (input)')\n\n# Calculate the input cost of the tuned model.\ntuned_tokens = client.models.count_tokens(model=tuned_model.base_model, contents=sample_row).total_tokens\nprint(f'Tuned model: {tuned_tokens} (input)')\n\nsavings = (sysint_tokens - tuned_tokens) / tuned_tokens\nprint(f'Token savings: {savings:.2%}')  # Note that this is only n=1.","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:10.147831Z","iopub.status.idle":"2025-04-10T05:24:10.148229Z","shell.execute_reply.started":"2025-04-10T05:24:10.148054Z","shell.execute_reply":"2025-04-10T05:24:10.148070Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"The earlier verbose model also produced more output tokens than needed for this task.","metadata":{}},{"cell_type":"code","source":"baseline_token_output = baseline_response.usage_metadata.candidates_token_count\nprint('Baseline (verbose) output tokens:', baseline_token_output)\n\ntuned_model_output = client.models.generate_content(\n    model=model_id, contents=sample_row)\ntuned_tokens_output = tuned_model_output.usage_metadata.candidates_token_count\nprint('Tuned output tokens:', tuned_tokens_output)","metadata":{"trusted":true,"execution":{"iopub.status.busy":"2025-04-10T05:24:10.150721Z","iopub.status.idle":"2025-04-10T05:24:10.151198Z","shell.execute_reply.started":"2025-04-10T05:24:10.150975Z","shell.execute_reply":"2025-04-10T05:24:10.150997Z"}},"outputs":[],"execution_count":null},{"cell_type":"markdown","source":"## Next steps\n\nNow that you have tuned a classification model, try some other tasks, like tuning a model to respond with a specific tone or style using hand-written examples (or even generated examples!). Kaggle hosts [a number of datasets](https://www.kaggle.com/datasets) you can try out.\n\nLearn about [when supervised fine-tuning is most effective](https://cloud.google.com/blog/products/ai-machine-learning/supervised-fine-tuning-for-gemini-llm).\n\nAnd check out the [fine-tuning tutorial](https://ai.google.dev/gemini-api/docs/model-tuning/tutorial?hl=en&lang=python) for another example that shows a tuned model extending beyond the training data to new, unseen inputs.\n\n*- [Mark McD](https://linktr.ee/markmcd)*","metadata":{"id":"6c1204a5d0ab"}}]}
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "1e632ef2",
+   "metadata": {
+    "id": "4KDIFPAL2EnL",
+    "papermill": {
+     "duration": 0.00601,
+     "end_time": "2025-04-10T06:26:50.042746",
+     "exception": false,
+     "start_time": "2025-04-10T06:26:50.036736",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "## Categorise finance transactions\n",
+    "\n",
+    "In life, my financial transactions are often categorised incorrectly in my budgeting app. I decided to find a better solution.\n",
+    "\n",
+    "In this example, I will first try to categrise with an exsiting Gemini model using zero-shot prompt and evaluate it performance.Then I will tune a model with the data catagorised by me,and evaluate its performance."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "id": "3627b123",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:26:50.054955Z",
+     "iopub.status.busy": "2025-04-10T06:26:50.054559Z",
+     "iopub.status.idle": "2025-04-10T06:27:09.057269Z",
+     "shell.execute_reply": "2025-04-10T06:27:09.056017Z"
+    },
+    "id": "9wafTyEH1_xF",
+    "papermill": {
+     "duration": 19.011864,
+     "end_time": "2025-04-10T06:27:09.059907",
+     "exception": false,
+     "start_time": "2025-04-10T06:26:50.048043",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "!pip uninstall -qqy jupyterlab  # Remove unused conflicting packages\n",
+    "!pip install -U -q \"google-genai==1.7.0\""
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "id": "5c444f1c",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:27:09.072445Z",
+     "iopub.status.busy": "2025-04-10T06:27:09.072044Z",
+     "iopub.status.idle": "2025-04-10T06:27:10.422655Z",
+     "shell.execute_reply": "2025-04-10T06:27:10.421417Z"
+    },
+    "id": "T0CBG9xL2PvT",
+    "papermill": {
+     "duration": 1.359746,
+     "end_time": "2025-04-10T06:27:10.425043",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:09.065297",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "'1.7.0'"
+      ]
+     },
+     "execution_count": 2,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "from google import genai\n",
+    "from google.genai import types\n",
+    "\n",
+    "genai.__version__"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "id": "c8f261f1",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:27:10.438438Z",
+     "iopub.status.busy": "2025-04-10T06:27:10.437398Z",
+     "iopub.status.idle": "2025-04-10T06:27:10.761178Z",
+     "shell.execute_reply": "2025-04-10T06:27:10.760133Z"
+    },
+    "id": "VuJPY3GK2SLZ",
+    "papermill": {
+     "duration": 0.333378,
+     "end_time": "2025-04-10T06:27:10.764147",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:10.430769",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "from kaggle_secrets import UserSecretsClient\n",
+    "\n",
+    "GOOGLE_API_KEY = UserSecretsClient().get_secret(\"GOOGLE_API_KEY\")\n",
+    "\n",
+    "client = genai.Client(api_key=GOOGLE_API_KEY)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "19a463f8",
+   "metadata": {
+    "id": "CqVA5QFO6n4z",
+    "papermill": {
+     "duration": 0.005212,
+     "end_time": "2025-04-10T06:27:10.775438",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:10.770226",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "### Explore available models"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "id": "fe855ffa",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:27:10.787850Z",
+     "iopub.status.busy": "2025-04-10T06:27:10.787431Z",
+     "iopub.status.idle": "2025-04-10T06:27:11.061250Z",
+     "shell.execute_reply": "2025-04-10T06:27:11.060018Z"
+    },
+    "id": "coEacWAB6o0G",
+    "papermill": {
+     "duration": 0.283038,
+     "end_time": "2025-04-10T06:27:11.063899",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:10.780861",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "models/chat-bison-001\n",
+      "models/text-bison-001\n",
+      "models/embedding-gecko-001\n",
+      "models/gemini-1.0-pro-vision-latest\n",
+      "models/gemini-pro-vision\n",
+      "models/gemini-1.5-pro-latest\n",
+      "models/gemini-1.5-pro-001\n",
+      "models/gemini-1.5-pro-002\n",
+      "models/gemini-1.5-pro\n",
+      "models/gemini-1.5-flash-latest\n",
+      "models/gemini-1.5-flash-001\n",
+      "models/gemini-1.5-flash-001-tuning\n",
+      "models/gemini-1.5-flash\n",
+      "models/gemini-1.5-flash-002\n",
+      "models/gemini-1.5-flash-8b\n",
+      "models/gemini-1.5-flash-8b-001\n",
+      "models/gemini-1.5-flash-8b-latest\n",
+      "models/gemini-1.5-flash-8b-exp-0827\n",
+      "models/gemini-1.5-flash-8b-exp-0924\n",
+      "models/gemini-2.5-pro-exp-03-25\n",
+      "models/gemini-2.5-pro-preview-03-25\n",
+      "models/gemini-2.0-flash-exp\n",
+      "models/gemini-2.0-flash\n",
+      "models/gemini-2.0-flash-001\n",
+      "models/gemini-2.0-flash-exp-image-generation\n",
+      "models/gemini-2.0-flash-lite-001\n",
+      "models/gemini-2.0-flash-lite\n",
+      "models/gemini-2.0-flash-lite-preview-02-05\n",
+      "models/gemini-2.0-flash-lite-preview\n",
+      "models/gemini-2.0-pro-exp\n",
+      "models/gemini-2.0-pro-exp-02-05\n",
+      "models/gemini-exp-1206\n",
+      "models/gemini-2.0-flash-thinking-exp-01-21\n",
+      "models/gemini-2.0-flash-thinking-exp\n",
+      "models/gemini-2.0-flash-thinking-exp-1219\n",
+      "models/learnlm-1.5-pro-experimental\n",
+      "models/gemma-3-1b-it\n",
+      "models/gemma-3-4b-it\n",
+      "models/gemma-3-12b-it\n",
+      "models/gemma-3-27b-it\n",
+      "models/embedding-001\n",
+      "models/text-embedding-004\n",
+      "models/gemini-embedding-exp-03-07\n",
+      "models/gemini-embedding-exp\n",
+      "models/aqa\n",
+      "models/imagen-3.0-generate-002\n",
+      "models/veo-2.0-generate-001\n",
+      "models/gemini-2.0-flash-live-001\n"
+     ]
+    }
+   ],
+   "source": [
+    "for model in client.models.list():\n",
+    "        print(model.name)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "f2d35c8a",
+   "metadata": {
+    "id": "peFm0w_0c1CO",
+    "papermill": {
+     "duration": 0.0053,
+     "end_time": "2025-04-10T06:27:11.075953",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:11.070653",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "## Use the dataset\n",
+    "\n",
+    "I have uploaded transaction data categorised by me. Then I group it to training data and test data"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "id": "54882297",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:27:11.088629Z",
+     "iopub.status.busy": "2025-04-10T06:27:11.088012Z",
+     "iopub.status.idle": "2025-04-10T06:27:13.627354Z",
+     "shell.execute_reply": "2025-04-10T06:27:13.625782Z"
+    },
+    "papermill": {
+     "duration": 2.549937,
+     "end_time": "2025-04-10T06:27:13.631181",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:11.081244",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Number of subcategories: 65\n",
+      "Sample subcategories: ['Active sport, fitness' 'Advisory' 'Alcohol, tobacco'\n",
+      " 'Bar, cafe, drink, snacks' 'Books, audio, subscriptions' 'Charges, Fees'\n",
+      " 'Charity, gifts' 'Checks, coupons' 'Clothes & shoes'\n",
+      " 'Culture, sport events']\n",
+      "\n",
+      "Sample notes:\n",
+      "1. AMAZON AU      SYDNEY SOUTH CREDIT CARD PURCHASEAmazon Basics High-Density Round Foam Roller for Exercise and Recovery - 61cm, Blue Speckled → Active sport, fitness\n",
+      "2. 02 DEC 20 - $98.00 LULULEMON ATHLETICA AUSTRAlbert Park [Eff Date: 30 NOV 20] → Active sport, fitness\n",
+      "3. REBEL MELBOURNE CTRL MELBOURNE VI AUSTap and Pay xx3173Value Date_ 17/03/2018 → Active sport, fitness\n"
+     ]
+    }
+   ],
+   "source": [
+    "# Load your transaction data\n",
+    "import pandas as pd\n",
+    "from sklearn.model_selection import train_test_split\n",
+    "\n",
+    "# Load your data\n",
+    "file_path = \"/kaggle/input/training/categorized_transaction.csv\"\n",
+    "df = pd.read_csv(file_path)\n",
+    "\n",
+    "# Split into train and test sets (80/20 split)\n",
+    "df_train, df_test = train_test_split(df, test_size=0.2, random_state=42)\n",
+    "\n",
+    "# Display the subcategories (labels) in your dataset\n",
+    "subcategories = df['subcategory'].unique()\n",
+    "print(f\"Number of subcategories: {len(subcategories)}\")\n",
+    "print(\"Sample subcategories:\", subcategories[:10])  # Show first 10 subcategories\n",
+    "\n",
+    "# Quick look at note examples\n",
+    "print(\"\\nSample notes:\")\n",
+    "for i, note in enumerate(df['note'].head(3)):\n",
+    "    print(f\"{i+1}. {note} → {df['subcategory'].iloc[i]}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "a44222cb",
+   "metadata": {
+    "id": "03lDs1O4ZQ0-",
+    "papermill": {
+     "duration": 0.005416,
+     "end_time": "2025-04-10T06:27:13.642620",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:13.637204",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "## Sample the dataset\n",
+    "Now sample the data. I will keep 50 rows for each subcategory for training."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "id": "044545d7",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:27:13.655603Z",
+     "iopub.status.busy": "2025-04-10T06:27:13.655079Z",
+     "iopub.status.idle": "2025-04-10T06:27:13.707872Z",
+     "shell.execute_reply": "2025-04-10T06:27:13.706153Z"
+    },
+    "papermill": {
+     "duration": 0.062482,
+     "end_time": "2025-04-10T06:27:13.710442",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:13.647960",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Original training data: 9936 rows\n",
+      "Sampled training data: 1654 rows\n",
+      "Number of subcategories: 63\n",
+      "\n",
+      "Sample of subcategory counts in training data:\n",
+      "subcategory\n",
+      "Hobbies                  50\n",
+      "Interests, dividends     50\n",
+      "Home, garden             50\n",
+      "TRANSFER                 50\n",
+      "Software, apps, games    50\n",
+      "Name: count, dtype: int64\n"
+     ]
+    }
+   ],
+   "source": [
+    "def sample_data(df, num_samples):\n",
+    "    \"\"\"\n",
+    "    Sample rows from each subcategory, selecting num_samples from each.\n",
+    "    If a subcategory has fewer than num_samples entries, takes all available rows.\n",
+    "    \n",
+    "    Args:\n",
+    "        df: DataFrame containing transaction data\n",
+    "        num_samples: Number of samples to take per subcategory\n",
+    "        \n",
+    "    Returns:\n",
+    "        DataFrame with balanced samples across subcategories\n",
+    "    \"\"\"\n",
+    "    # Group by subcategory and sample\n",
+    "    sampled_df = (\n",
+    "        df.groupby(\"subcategory\")[df.columns]\n",
+    "        .apply(lambda x: x.sample(min(len(x), num_samples)))\n",
+    "        .reset_index(drop=True)\n",
+    "    )\n",
+    "    \n",
+    "    # Convert subcategory to category type for efficiency\n",
+    "    sampled_df[\"subcategory\"] = sampled_df[\"subcategory\"].astype(\"category\")\n",
+    "    \n",
+    "    return sampled_df\n",
+    "\n",
+    "# Sample training and test data\n",
+    "TRAIN_NUM_SAMPLES = 50  # 50 samples per subcategory for training\n",
+    "TEST_NUM_SAMPLES = 10   # 10 samples per subcategory for testing\n",
+    "\n",
+    "# Create balanced datasets\n",
+    "df_train_sampled = sample_data(df_train, TRAIN_NUM_SAMPLES)\n",
+    "df_test_sampled = sample_data(df_test, TEST_NUM_SAMPLES)\n",
+    "\n",
+    "# Print statistics about the sampled data\n",
+    "print(f\"Original training data: {len(df_train)} rows\")\n",
+    "print(f\"Sampled training data: {len(df_train_sampled)} rows\")\n",
+    "print(f\"Number of subcategories: {df_train_sampled['subcategory'].nunique()}\")\n",
+    "\n",
+    "# Show distribution of a few subcategories\n",
+    "print(\"\\nSample of subcategory counts in training data:\")\n",
+    "print(df_train_sampled['subcategory'].value_counts().head(5))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "3f466a69",
+   "metadata": {
+    "papermill": {
+     "duration": 0.005273,
+     "end_time": "2025-04-10T06:27:13.721378",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:13.716105",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "## Load the subcategory and category tabe\n",
+    "In this step, I load the subcategory and category table."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "id": "6b551e27",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:27:13.734877Z",
+     "iopub.status.busy": "2025-04-10T06:27:13.734434Z",
+     "iopub.status.idle": "2025-04-10T06:27:13.824967Z",
+     "shell.execute_reply": "2025-04-10T06:27:13.823598Z"
+    },
+    "papermill": {
+     "duration": 0.10118,
+     "end_time": "2025-04-10T06:27:13.827995",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:13.726815",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Database schema created successfully!\n"
+     ]
+    }
+   ],
+   "source": [
+    "import sqlite3\n",
+    "\n",
+    "# Connect to your database\n",
+    "db_conn = sqlite3.connect('/kaggle/working/transaction_categories.db')\n",
+    "cursor = db_conn.cursor()\n",
+    "\n",
+    "# Create the tables\n",
+    "cursor.execute('''\n",
+    "CREATE TABLE IF NOT EXISTS categories (\n",
+    "    category_id INTEGER PRIMARY KEY AUTOINCREMENT,\n",
+    "    name VARCHAR(100) NOT NULL UNIQUE,\n",
+    "    description TEXT,\n",
+    "    display_order INT DEFAULT 100,\n",
+    "    is_active BOOLEAN DEFAULT 1,\n",
+    "    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n",
+    ")\n",
+    "''')\n",
+    "\n",
+    "cursor.execute('''\n",
+    "CREATE TABLE IF NOT EXISTS subcategories (\n",
+    "    subcategory_id INTEGER PRIMARY KEY AUTOINCREMENT,\n",
+    "    category_id INTEGER NOT NULL,\n",
+    "    name VARCHAR(100) NOT NULL,\n",
+    "    description TEXT,\n",
+    "    display_order INT DEFAULT 100,\n",
+    "    is_active BOOLEAN DEFAULT 1,\n",
+    "    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n",
+    "    FOREIGN KEY (category_id) REFERENCES categories(category_id)\n",
+    ")\n",
+    "''')\n",
+    "\n",
+    "cursor.execute('''\n",
+    "CREATE TABLE IF NOT EXISTS keyword_rules (\n",
+    "    rule_id INTEGER PRIMARY KEY AUTOINCREMENT,\n",
+    "    category_id INTEGER NOT NULL,\n",
+    "    subcategory_id INTEGER,\n",
+    "    keyword VARCHAR(255) NOT NULL,\n",
+    "    match_type VARCHAR(20) DEFAULT 'contains',\n",
+    "    priority INT DEFAULT 100,\n",
+    "    is_active BOOLEAN DEFAULT 1,\n",
+    "    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n",
+    "    created_by VARCHAR(100),\n",
+    "    FOREIGN KEY (category_id) REFERENCES categories(category_id),\n",
+    "    FOREIGN KEY (subcategory_id) REFERENCES subcategories(subcategory_id)\n",
+    ")\n",
+    "''')\n",
+    "\n",
+    "cursor.execute('''\n",
+    "CREATE TABLE IF NOT EXISTS transaction_categories (\n",
+    "    transaction_id VARCHAR(100) PRIMARY KEY,\n",
+    "    category_id INTEGER,\n",
+    "    subcategory_id INTEGER,\n",
+    "    confidence_score DECIMAL(5,4),\n",
+    "    categorization_method VARCHAR(50),\n",
+    "    is_manually_reviewed BOOLEAN DEFAULT 0,\n",
+    "    categorized_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,\n",
+    "    FOREIGN KEY (category_id) REFERENCES categories(category_id),\n",
+    "    FOREIGN KEY (subcategory_id) REFERENCES subcategories(subcategory_id)\n",
+    ")\n",
+    "''')\n",
+    "\n",
+    "# Insert main categories\n",
+    "categories = [\n",
+    "    ('Food & Beverages', 'Expenses related to food and drinks', 10),\n",
+    "    ('Shopping', 'Retail purchases and shopping expenses', 20),\n",
+    "    ('Housing', 'Home-related expenses including rent and utilities', 30),\n",
+    "    ('Transportation', 'Public and private transportation costs', 40),\n",
+    "    ('Vehicle', 'Car and vehicle related expenses', 50),\n",
+    "    ('Life & Entertainment', 'Leisure activities and entertainment', 60),\n",
+    "    ('Communication, PC', 'Internet, phone and computer expenses', 70),\n",
+    "    ('Financial expenses', 'Banking fees, loans, and financial costs', 80),\n",
+    "    ('Investments', 'Investment-related transactions', 90),\n",
+    "    ('Income', 'All sources of incoming money', 100),\n",
+    "    ('Transfer', 'Money transfers between accounts', 110)\n",
+    "]\n",
+    "\n",
+    "cursor.executemany('INSERT OR IGNORE INTO categories (name, description, display_order) VALUES (?, ?, ?)', categories)\n",
+    "\n",
+    "# Insert subcategories for Food & Beverages\n",
+    "food_subcategories = [\n",
+    "    (1, 'Bar, cafe, drink, snacks', 10),\n",
+    "    (1, 'Groceries', 20),\n",
+    "    (1, 'Restaurant, fast-food', 30)\n",
+    "]\n",
+    "cursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', food_subcategories)\n",
+    "\n",
+    "# Insert subcategories for Shopping\n",
+    "shopping_subcategories = [\n",
+    "    (2, 'Clothes & Footwear', 10),\n",
+    "    (2, 'Drug-store, chemist', 20),\n",
+    "    (2, 'Electronics, accessories', 30),\n",
+    "    (2, 'Gifts, joy', 40),\n",
+    "    (2, 'Health and beauty', 50),\n",
+    "    (2, 'Home, garden', 60),\n",
+    "    (2, 'Jewels, accessories', 70),\n",
+    "    (2, 'Kids', 80),\n",
+    "    (2, 'Leisure time', 90),\n",
+    "    (2, 'Pets, animals', 100),\n",
+    "    (2, 'Stationery, tools', 110)\n",
+    "]\n",
+    "cursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', shopping_subcategories)\n",
+    "\n",
+    "housing_subcategories=[\n",
+    "    (3, 'Energy, utilities', 10),\n",
+    "    (3, 'Maintenance, repairs', 20),\n",
+    "    (3, 'Mortgage', 30),\n",
+    "    (3, 'Property insurance', 40),\n",
+    "    (3, 'Rent', 50),\n",
+    "    (3, 'Services', 60)\n",
+    "]\n",
+    "cursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', housing_subcategories)\n",
+    "\n",
+    "\n",
+    "transportation_subcategories=[\n",
+    "    (4, 'Business trips', 10),\n",
+    "    (4, 'Long distance', 20),\n",
+    "    (4, 'Public transport', 30),\n",
+    "    (4, 'Taxi', 40)\n",
+    "]\n",
+    "cursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', transportation_subcategories)\n",
+    "\n",
+    "vehicle_subcategories=[\n",
+    "    (5, 'Fuel', 10),\n",
+    "    (5, 'Leasing', 20),\n",
+    "    (5, 'Parking', 30),\n",
+    "    (5, 'Rentals', 40),\n",
+    "    (5, 'Vehicle insurance', 50),\n",
+    "    (5, 'Vehicle maintenance', 60)\n",
+    "]\n",
+    "cursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', vehicle_subcategories)\n",
+    "\n",
+    "life_subcategories=[\n",
+    "    (6, 'Active sport, fitness', 10),\n",
+    "    (6, 'Alcohol, tobacco', 20),\n",
+    "    (6, 'Books, audio, subscriptions', 30),\n",
+    "    (6, 'Charity, gifts', 40),\n",
+    "    (6, 'Culture, sport events', 50),\n",
+    "    (6, 'Education, development', 60),\n",
+    "    (6, 'Health care, doctor', 70),\n",
+    "    (6, 'Hobbies', 80),\n",
+    "    (6, 'Holiday, trips, hotels', 90),\n",
+    "    (6, 'Life events', 100),\n",
+    "    (6, 'Lottery, gambling', 110),\n",
+    "    (6, 'TV, Streaming', 120),\n",
+    "    (6, 'Wellness, beauty', 130)\n",
+    "]\n",
+    "cursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', life_subcategories)\n",
+    "\n",
+    "communication_subcategories=[\n",
+    "    (7, 'Internet', 10),\n",
+    "    (7, 'Postal services', 20),\n",
+    "    (7, 'Software, apps, games', 30),\n",
+    "    (7, 'Telephony, mobile phone', 40)\n",
+    "]\n",
+    "cursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', communication_subcategories)\n",
+    "\n",
+    "financial_subcategories=[\n",
+    "    (8, 'Advisory', 10),\n",
+    "    (8, 'Charges, Fees', 20),\n",
+    "    (8, 'Child Support', 30),\n",
+    "    (8, 'Fines', 40),\n",
+    "    (8, 'Insurances', 50),\n",
+    "    (8, 'Loans, interests', 60),\n",
+    "    (8, 'Taxes', 70)\n",
+    "]\n",
+    "cursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', financial_subcategories)\n",
+    "\n",
+    "investments_subcategories=[\n",
+    "    (9, 'Collections', 10),\n",
+    "    (9, 'Financial investments', 20),\n",
+    "    (9, 'Realty', 30),\n",
+    "    (9, 'Savings', 40),\n",
+    "    (9, 'Vehicles, chattels', 50)\n",
+    "]\n",
+    "cursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', investments_subcategories)\n",
+    "\n",
+    "income_subcategories=[\n",
+    "    (10, 'Checks, coupons', 10),\n",
+    "    (10, 'Child Support', 20),\n",
+    "    (10, 'Dues & grants', 30),\n",
+    "    (10, 'Gifts', 40),\n",
+    "    (10, 'Interests, dividends', 50),\n",
+    "    (10, 'Lending, renting', 60),\n",
+    "    (10, 'Lottery, gambling', 70),\n",
+    "    (10, 'Refunds (tax, purchase)', 80),\n",
+    "    (10, 'Rental income', 90),\n",
+    "    (10, 'Sale', 100),\n",
+    "    (10, 'Wage, invoices', 110)\n",
+    "]\n",
+    "cursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', income_subcategories)\n",
+    "\n",
+    "transfer_subcatgories=[\n",
+    "    (11, 'Transfer', 10),   \n",
+    "]\n",
+    "cursor.executemany('INSERT OR IGNORE INTO subcategories (category_id, name, display_order) VALUES (?, ?, ?)', transfer_subcatgories)\n",
+    "\n",
+    "# Commit the changes\n",
+    "db_conn.commit()\n",
+    "print(\"Database schema created successfully!\")\n",
+    "\n",
+    "# Close the connection when done\n",
+    "db_conn.close()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "6ec11568",
+   "metadata": {
+    "papermill": {
+     "duration": 0.005216,
+     "end_time": "2025-04-10T06:27:13.839103",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:13.833887",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "## Instruct the zero-shot prompt\n",
+    "I draft the prompt asking it to only use the subcategory from the loaded table."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "id": "e18c6c69",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:27:13.852248Z",
+     "iopub.status.busy": "2025-04-10T06:27:13.851555Z",
+     "iopub.status.idle": "2025-04-10T06:27:13.856505Z",
+     "shell.execute_reply": "2025-04-10T06:27:13.855284Z"
+    },
+    "papermill": {
+     "duration": 0.013618,
+     "end_time": "2025-04-10T06:27:13.858428",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:13.844810",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    " import sqlite3\n",
+    "\n",
+    "db_file = \"transaction_categories.db\"\n",
+    "db_conn = sqlite3.connect(db_file)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 9,
+   "id": "57ce3e9f",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:27:13.871640Z",
+     "iopub.status.busy": "2025-04-10T06:27:13.870739Z",
+     "iopub.status.idle": "2025-04-10T06:27:14.065884Z",
+     "shell.execute_reply": "2025-04-10T06:27:14.064747Z"
+    },
+    "papermill": {
+     "duration": 0.204499,
+     "end_time": "2025-04-10T06:27:14.068397",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:13.863898",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [],
+   "source": [
+    "from google.api_core import retry\n",
+    "\n",
+    "# Define a system instruction for classification with the subcategories list\n",
+    "system_instruct = \"\"\"\n",
+    "You are a financial transaction categorization service. You will be provided with a transaction \n",
+    "description (note) and must classify it into exactly one of the following subcategories:\n",
+    "\n",
+    "{}\n",
+    "\n",
+    "Your response must be ONLY the exact subcategory name from this list, with no additional text.\n",
+    "Do not create new categories or modify existing ones.\n",
+    "If uncertain, choose the most likely subcategory from the list above.\n",
+    "\"\"\"\n",
+    "\n",
+    "# Get the list of subcategories and format them for the prompt\n",
+    "all_subcategories = sorted(df['subcategory'].unique())\n",
+    "subcategories_text = \"\\n\".join([f\"- {subcat}\" for subcat in all_subcategories])\n",
+    "\n",
+    "# Insert the subcategories into the system instruction\n",
+    "system_instruct = system_instruct.format(subcategories_text)\n",
+    "\n",
+    "# Define a helper to retry when per-minute quota is reached\n",
+    "is_retriable = lambda e: (isinstance(e, genai.errors.APIError) and e.code in {429, 503})\n",
+    "\n",
+    "@retry.Retry(predicate=is_retriable)\n",
+    "def predict_label(transaction_note: str) -> str:\n",
+    "    \"\"\"Classify the provided transaction note into a subcategory from the predefined list.\"\"\"\n",
+    "    response = client.models.generate_content(\n",
+    "        model=\"gemini-2.0-flash\",\n",
+    "        config=types.GenerateContentConfig(\n",
+    "            system_instruction=system_instruct),\n",
+    "        contents=transaction_note)\n",
+    "    rc = response.candidates[0]\n",
+    "    \n",
+    "    # Any errors, filters, recitation, etc we can mark as a general error\n",
+    "    if rc.finish_reason.name != \"STOP\":\n",
+    "        return \"(error)\"\n",
+    "    else:\n",
+    "        # Clean up the response\n",
+    "        prediction = response.text.strip()\n",
+    "        \n",
+    "        # Verify the prediction is from our list of subcategories\n",
+    "        if prediction in all_subcategories:\n",
+    "            return prediction\n",
+    "        else:\n",
+    "            # Find the closest matching subcategory if possible\n",
+    "            for subcat in all_subcategories:\n",
+    "                if subcat.lower() in prediction.lower():\n",
+    "                    return subcat\n",
+    "            return \"(invalid category)\""
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "605b6bd7",
+   "metadata": {
+    "papermill": {
+     "duration": 0.00551,
+     "end_time": "2025-04-10T06:27:14.079620",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:14.074110",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "## Evaluate baseline performance\n",
+    "\n",
+    "Now I perform an evaluation on the available models to ensure I can measure how much the tuning helps."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 10,
+   "id": "10a34c67",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:27:14.092814Z",
+     "iopub.status.busy": "2025-04-10T06:27:14.092187Z",
+     "iopub.status.idle": "2025-04-10T06:27:22.225909Z",
+     "shell.execute_reply": "2025-04-10T06:27:22.224538Z"
+    },
+    "papermill": {
+     "duration": 8.143765,
+     "end_time": "2025-04-10T06:27:22.229020",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:14.085255",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "8a5a839b912c4dea9fa1e741faf9bfd7",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "Output()"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Evaluating 20 transactions...\n"
+     ]
+    },
+    {
+     "data": {
+      "text/html": [
+       "<pre style=\"white-space:pre;overflow-x:auto;line-height:normal;font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace\"></pre>\n"
+      ],
+      "text/plain": []
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "text/html": [
+       "<pre style=\"white-space:pre;overflow-x:auto;line-height:normal;font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace\">\n",
+       "</pre>\n"
+      ],
+      "text/plain": [
+       "\n"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Baseline accuracy: 30.00%\n",
+      "\n",
+      "Sample predictions:\n",
+      "Transaction: PayPal *Uber AU Sydney AU...\n",
+      "True subcategory: Taxi\n",
+      "Predicted: Taxi\n",
+      "Correct: True\n",
+      "\n",
+      "Transaction: 7-ELEVEN 1023 HAWTHORN VI AUSTap and Pay xx3173Val...\n",
+      "True subcategory: Food & Drinks\n",
+      "Predicted: Food & Drinks\n",
+      "Correct: True\n",
+      "\n",
+      "Transaction: DIRECT DEBIT RECEIVED - THANK YOU...\n",
+      "True subcategory: TRANSFER\n",
+      "Predicted: Wage, invoices\n",
+      "Correct: False\n",
+      "\n",
+      "Transaction: PAYPAL *ZOOS VIC 039340...\n",
+      "True subcategory: Holiday, trips, hotels\n",
+      "Predicted: Culture, sport events\n",
+      "Correct: False\n",
+      "\n",
+      "Transaction: 2% CASHBACK - ENJOY WOOLWORTHS 3307 08OCT19  56689...\n",
+      "True subcategory: Refunds (tax, purchase)\n",
+      "Predicted: Groceries\n",
+      "Correct: False\n",
+      "\n",
+      "Most common error patterns:\n",
+      "                 subcategory             prediction  count\n",
+      "275  Refunds (tax, purchase)              Groceries      2\n",
+      "107    Financial investments              Groceries      2\n",
+      "161                  Hobbies  Culture, sport events      2\n",
+      "173   Holiday, trips, hotels               TRANSFER      1\n",
+      "137               Gifts, joy               Shopping      1\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "/tmp/ipykernel_17/3877153812.py:38: FutureWarning: The default of observed=False is deprecated and will be changed to True in a future version of pandas. Pass observed=False to retain current behavior or observed=True to adopt the future default and silence this warning.\n",
+      "  error_counts = error_patterns.groupby(['subcategory', 'prediction']).size().reset_index(name='count')\n"
+     ]
+    }
+   ],
+   "source": [
+    "import tqdm\n",
+    "from tqdm.rich import tqdm as tqdmr\n",
+    "import warnings\n",
+    "\n",
+    "# Enable tqdm features on Pandas\n",
+    "tqdmr.pandas()\n",
+    "\n",
+    "# Suppress the experimental warning\n",
+    "warnings.filterwarnings(\"ignore\", category=tqdm.TqdmExperimentalWarning)\n",
+    "\n",
+    "# Further sample the test data to be mindful of the free-tier quota\n",
+    "# Sample a small subset of test data (adjust number as needed)\n",
+    "TEST_SAMPLE_SIZE = 20\n",
+    "df_baseline_eval = df_test_sampled.sample(min(TEST_SAMPLE_SIZE, len(df_test_sampled)))\n",
+    "\n",
+    "print(f\"Evaluating {len(df_baseline_eval)} transactions...\")\n",
+    "\n",
+    "# Make predictions using the sampled data with progress bar\n",
+    "df_baseline_eval['prediction'] = df_baseline_eval['note'].progress_apply(predict_label)\n",
+    "\n",
+    "# Calculate the accuracy\n",
+    "accuracy = (df_baseline_eval['subcategory'] == df_baseline_eval['prediction']).mean()\n",
+    "print(f\"Baseline accuracy: {accuracy:.2%}\")\n",
+    "\n",
+    "# Display some examples of predictions\n",
+    "print(\"\\nSample predictions:\")\n",
+    "sample_results = df_baseline_eval[['note', 'subcategory', 'prediction']].sample(min(5, len(df_baseline_eval)))\n",
+    "for idx, row in sample_results.iterrows():\n",
+    "    print(f\"Transaction: {row['note'][:50]}...\")\n",
+    "    print(f\"True subcategory: {row['subcategory']}\")\n",
+    "    print(f\"Predicted: {row['prediction']}\")\n",
+    "    print(f\"Correct: {row['subcategory'] == row['prediction']}\\n\")\n",
+    "\n",
+    "# Create a confusion matrix to see where the model is making mistakes\n",
+    "print(\"Most common error patterns:\")\n",
+    "error_patterns = df_baseline_eval[df_baseline_eval['subcategory'] != df_baseline_eval['prediction']]\n",
+    "if len(error_patterns) > 0:\n",
+    "    error_counts = error_patterns.groupby(['subcategory', 'prediction']).size().reset_index(name='count')\n",
+    "    error_counts = error_counts.sort_values('count', ascending=False)\n",
+    "    print(error_counts.head(5))\n",
+    "else:\n",
+    "    print(\"No errors found in the evaluation set!\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "3b0a9781",
+   "metadata": {
+    "papermill": {
+     "duration": 0.008864,
+     "end_time": "2025-04-10T06:27:22.248706",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:22.239842",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "## Tune my model\n",
+    "Now I train the model with training data to tune it for assessment and potential use."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 11,
+   "id": "419295a6",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:27:22.507380Z",
+     "iopub.status.busy": "2025-04-10T06:27:22.506999Z",
+     "iopub.status.idle": "2025-04-10T06:27:23.440425Z",
+     "shell.execute_reply": "2025-04-10T06:27:23.438950Z"
+    },
+    "papermill": {
+     "duration": 1.185614,
+     "end_time": "2025-04-10T06:27:23.443268",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:22.257654",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Preparing transaction data for fine-tuning...\n",
+      "Created 1654 training examples\n",
+      "Sample example - Input: 'REBEL MELBOURNE CTRL MELBOURNE VI AUSTap and Pay x...'\n",
+      "Sample example - Output: 'Active sport, fitness'\n",
+      "Checking for existing tuned models...\n",
+      "Starting new fine-tuning job...\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "/tmp/ipykernel_17/3441513278.py:64: ExperimentalWarning: The SDK's tuning implementation is experimental, and may change in future versions.\n",
+      "  tuning_op = client.tunings.tune(\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Fine-tuning initiated. Model ID: tunedModels/transactioncategoryclassifier-al3eu3hkf9\n",
+      "Current status: JOB_STATE_QUEUED\n",
+      "\n",
+      "Using model: tunedModels/transactioncategoryclassifier-al3eu3hkf9\n"
+     ]
+    }
+   ],
+   "source": [
+    "from collections.abc import Iterable\n",
+    "import datetime\n",
+    "import time\n",
+    "import os\n",
+    "\n",
+    "# 1. Prepare your transaction data for fine-tuning\n",
+    "print(\"Preparing transaction data for fine-tuning...\")\n",
+    "\n",
+    "# Convert the DataFrame into the format expected by the API\n",
+    "training_examples = []\n",
+    "for _, row in df_train_sampled.iterrows():\n",
+    "    training_examples.append({\n",
+    "        \"textInput\": str(row['note']),\n",
+    "        \"output\": str(row['subcategory'])\n",
+    "    })\n",
+    "\n",
+    "print(f\"Created {len(training_examples)} training examples\")\n",
+    "print(f\"Sample example - Input: '{training_examples[0]['textInput'][:50]}...'\")\n",
+    "print(f\"Sample example - Output: '{training_examples[0]['output']}'\")\n",
+    "\n",
+    "# 2. Prepare the dataset in the required format\n",
+    "training_data = {\"examples\": training_examples}\n",
+    "\n",
+    "# 3. Set up the fine-tuning job - find existing or create new\n",
+    "model_id = None\n",
+    "TUNED_MODEL_PREFIX = 'tunedModels/transaction-category-classifier'\n",
+    "\n",
+    "try:\n",
+    "    # Try to read previous model ID from file\n",
+    "    if os.path.exists(\"tuned_model_id.txt\"):\n",
+    "        with open(\"tuned_model_id.txt\", \"r\") as f:\n",
+    "            saved_model_id = f.read().strip()\n",
+    "            if saved_model_id:\n",
+    "                print(f\"Found previously saved model ID: {saved_model_id}\")\n",
+    "                model_id = saved_model_id\n",
+    "    \n",
+    "    # If no saved ID, check for existing models\n",
+    "    if not model_id:\n",
+    "        queued_model = None\n",
+    "        print(\"Checking for existing tuned models...\")\n",
+    "        \n",
+    "        # List models in reverse order (newest first)\n",
+    "        for m in reversed(client.tunings.list()):\n",
+    "            # Look for transaction classification models\n",
+    "            if m.name.startswith(TUNED_MODEL_PREFIX):\n",
+    "                # If there is a completed model, use it\n",
+    "                if m.state.name == 'JOB_STATE_SUCCEEDED':\n",
+    "                    model_id = m.name\n",
+    "                    print(f'Found existing completed model to reuse: {model_id}')\n",
+    "                    break\n",
+    "                elif m.state.name == 'JOB_STATE_RUNNING' and not queued_model:\n",
+    "                    # If there's a model still running, remember it\n",
+    "                    queued_model = m.name\n",
+    "                    print(f'Found model still in progress: {queued_model}')\n",
+    "        \n",
+    "        # Use queued model if found and no completed model\n",
+    "        if not model_id and queued_model:\n",
+    "            model_id = queued_model\n",
+    "            print(f'Using in-progress model: {model_id}')\n",
+    "    \n",
+    "    # Create new model if needed\n",
+    "    if not model_id:\n",
+    "        print(\"Starting new fine-tuning job...\")\n",
+    "        tuning_op = client.tunings.tune(\n",
+    "            base_model=\"models/gemini-1.5-flash-001-tuning\",\n",
+    "            training_dataset=training_data,\n",
+    "            config=types.CreateTuningJobConfig(\n",
+    "                tuned_model_display_name=\"transaction-category-classifier\",\n",
+    "                batch_size=16,\n",
+    "                epoch_count=3,\n",
+    "            ),\n",
+    "        )\n",
+    "        \n",
+    "        model_id = tuning_op.name\n",
+    "        print(f\"Fine-tuning initiated. Model ID: {model_id}\")\n",
+    "        print(f\"Current status: {tuning_op.state}\")\n",
+    "    \n",
+    "    # Save the model ID for later use\n",
+    "    with open(\"tuned_model_id.txt\", \"w\") as f:\n",
+    "        f.write(model_id)\n",
+    "    \n",
+    "    print(f\"\\nUsing model: {model_id}\")\n",
+    "    \n",
+    "except Exception as e:\n",
+    "    print(f\"Error in fine-tuning process: {e}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "48a45635",
+   "metadata": {
+    "papermill": {
+     "duration": 0.006459,
+     "end_time": "2025-04-10T06:27:23.456605",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:23.450146",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "## Monitoring progress\n",
+    "Here I monitor whether this model has been tuned and ready to use."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 12,
+   "id": "8758e8a4",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:27:23.471614Z",
+     "iopub.status.busy": "2025-04-10T06:27:23.471147Z",
+     "iopub.status.idle": "2025-04-10T06:52:36.209173Z",
+     "shell.execute_reply": "2025-04-10T06:52:36.207997Z"
+    },
+    "papermill": {
+     "duration": 1512.755888,
+     "end_time": "2025-04-10T06:52:36.218964",
+     "exception": false,
+     "start_time": "2025-04-10T06:27:23.463076",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Current state: JOB_STATE_RUNNING\n",
+      "Done! The model state is: JOB_STATE_SUCCEEDED\n"
+     ]
+    }
+   ],
+   "source": [
+    "# 4. Monitor the fine-tuning progress\n",
+    "start_time = datetime.datetime.now(datetime.timezone.utc)\n",
+    "tuned_model = client.tunings.get(name=model_id)\n",
+    "\n",
+    "while not tuned_model.has_ended:\n",
+    "    print(f\"Current state: {tuned_model.state.name}\")\n",
+    "    if hasattr(tuned_model, 'progress'):\n",
+    "        print(f\"Progress: {tuned_model.progress}%\")\n",
+    "    \n",
+    "    time.sleep(60)  # Check every minute\n",
+    "    tuned_model = client.tunings.get(name=model_id)\n",
+    "\n",
+    "print(f\"Done! The model state is: {tuned_model.state.name}\")\n",
+    "\n",
+    "if not tuned_model.has_succeeded and tuned_model.error:\n",
+    "    print(\"Error:\", tuned_model.error)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "642f4974",
+   "metadata": {
+    "papermill": {
+     "duration": 0.007658,
+     "end_time": "2025-04-10T06:52:36.234654",
+     "exception": false,
+     "start_time": "2025-04-10T06:52:36.226996",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "source": [
+    "## Evaluate Tuned Model\n",
+    "Here I test and evaluate the performance of the tuned model."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 13,
+   "id": "6c6b46e4",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:52:36.253334Z",
+     "iopub.status.busy": "2025-04-10T06:52:36.252305Z",
+     "iopub.status.idle": "2025-04-10T06:52:42.017819Z",
+     "shell.execute_reply": "2025-04-10T06:52:42.016345Z"
+    },
+    "papermill": {
+     "duration": 5.77803,
+     "end_time": "2025-04-10T06:52:42.020755",
+     "exception": false,
+     "start_time": "2025-04-10T06:52:36.242725",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Transaction: AMAZON PRIME MEMBERSHIP ANNUAL RENEWAL\n",
+      "Predicted category: Subscriptions\n"
+     ]
+    }
+   ],
+   "source": [
+    "# 5. Test the tuned model with a sample transaction\n",
+    "def categorize_transaction(transaction_note):\n",
+    "    \"\"\"Use the fine-tuned model to categorize a transaction.\"\"\"\n",
+    "    response = client.models.generate_content(\n",
+    "        model=model_id,\n",
+    "        contents=transaction_note,\n",
+    "        config=types.GenerateContentConfig(\n",
+    "            temperature=0.0,  # Use deterministic output for classification\n",
+    "            max_output_tokens=10,  # Keep it short, we just need the category\n",
+    "        )\n",
+    "    )\n",
+    "    \n",
+    "    if response.candidates and response.candidates[0].content:\n",
+    "        return response.candidates[0].content.parts[0].text.strip()\n",
+    "    else:\n",
+    "        return \"(error)\"\n",
+    "\n",
+    "# Test with a sample transaction\n",
+    "sample_transaction = \"AMAZON PRIME MEMBERSHIP ANNUAL RENEWAL\"\n",
+    "predicted_category = categorize_transaction(sample_transaction)\n",
+    "print(f\"Transaction: {sample_transaction}\")\n",
+    "print(f\"Predicted category: {predicted_category}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 14,
+   "id": "d91dc1d8",
+   "metadata": {
+    "execution": {
+     "iopub.execute_input": "2025-04-10T06:52:42.040667Z",
+     "iopub.status.busy": "2025-04-10T06:52:42.040118Z",
+     "iopub.status.idle": "2025-04-10T06:53:23.520713Z",
+     "shell.execute_reply": "2025-04-10T06:53:23.519098Z"
+    },
+    "papermill": {
+     "duration": 41.494097,
+     "end_time": "2025-04-10T06:53:23.523718",
+     "exception": false,
+     "start_time": "2025-04-10T06:52:42.029621",
+     "status": "completed"
+    },
+    "tags": []
+   },
+   "outputs": [
+    {
+     "data": {
+      "application/vnd.jupyter.widget-view+json": {
+       "model_id": "65a8d9578dc946ad89994e7ad5420818",
+       "version_major": 2,
+       "version_minor": 0
+      },
+      "text/plain": [
+       "Output()"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Evaluating on 20 test transactions...\n"
+     ]
+    },
+    {
+     "data": {
+      "text/html": [
+       "<pre style=\"white-space:pre;overflow-x:auto;line-height:normal;font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace\"></pre>\n"
+      ],
+      "text/plain": []
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "text/html": [
+       "<pre style=\"white-space:pre;overflow-x:auto;line-height:normal;font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace\">\n",
+       "</pre>\n"
+      ],
+      "text/plain": [
+       "\n"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Model accuracy: 70.00%\n",
+      "\n",
+      "Sample predictions:\n",
+      "Transaction: ADOBE *ACROPRO SUBS Ado SAGGART...\n",
+      "True category: Books, audio, subscriptions\n",
+      "Predicted: Software, apps, games\n",
+      "Correct: False\n",
+      "\n",
+      "Transaction: CHEMIST WAREHOUSE BOX H BOX HILL...\n",
+      "True category: Drug-store, chemist\n",
+      "Predicted: (error)\n",
+      "Correct: False\n",
+      "\n",
+      "Transaction: Bonus Interest Activated...\n",
+      "True category: Interests, dividends\n",
+      "Predicted: Interests, dividends\n",
+      "Correct: True\n",
+      "\n",
+      "Transaction: Mecca Brands Pty Ltd Richmond AU...\n",
+      "True category: Health and beauty\n",
+      "Predicted: Clothes & shoes\n",
+      "Correct: False\n",
+      "\n",
+      "Transaction: V1257 28/03 ALDIMOBILE CHAT Ref: 74564500090...\n",
+      "True category: Phone, cell phone\n",
+      "Predicted: Phone, cell phone\n",
+      "Correct: True\n",
+      "\n",
+      "Found 6 misclassifications\n",
+      "Most common error patterns:\n",
+      "Predicted                    (error)  Bar, cafe, drink, snacks  \\\n",
+      "True                                                             \n",
+      "Books, audio, subscriptions        0                         0   \n",
+      "Drug-store, chemist                1                         0   \n",
+      "Financial investments              0                         0   \n",
+      "Health and beauty                  0                         0   \n",
+      "Public transport                   0                         1   \n",
+      "TRANSFER                           0                         0   \n",
+      "\n",
+      "Predicted                    Clothes & shoes  Life events  \\\n",
+      "True                                                        \n",
+      "Books, audio, subscriptions                0            0   \n",
+      "Drug-store, chemist                        0            0   \n",
+      "Financial investments                      0            1   \n",
+      "Health and beauty                          1            0   \n",
+      "Public transport                           0            0   \n",
+      "TRANSFER                                   0            0   \n",
+      "\n",
+      "Predicted                    Software, apps, games  TRANSFERTRANSFER  \n",
+      "True                                                                  \n",
+      "Books, audio, subscriptions                      1                 0  \n",
+      "Drug-store, chemist                              0                 0  \n",
+      "Financial investments                            0                 0  \n",
+      "Health and beauty                                0                 0  \n",
+      "Public transport                                 0                 0  \n",
+      "TRANSFER                                         0                 1  \n"
+     ]
+    }
+   ],
+   "source": [
+    "# 6. Evaluate the model on test data\n",
+    "import tqdm\n",
+    "from tqdm.rich import tqdm as tqdmr\n",
+    "import warnings\n",
+    "\n",
+    "# Enable tqdm features on Pandas\n",
+    "tqdmr.pandas()\n",
+    "\n",
+    "# Suppress the experimental warning\n",
+    "warnings.filterwarnings(\"ignore\", category=tqdm.TqdmExperimentalWarning)\n",
+    "\n",
+    "# Sample a subset of test data for evaluation\n",
+    "TEST_SAMPLE_SIZE = 20\n",
+    "df_eval = df_test_sampled.sample(min(TEST_SAMPLE_SIZE, len(df_test_sampled)))\n",
+    "\n",
+    "print(f\"Evaluating on {len(df_eval)} test transactions...\")\n",
+    "\n",
+    "# Make predictions with progress bar\n",
+    "df_eval['prediction'] = df_eval['note'].progress_apply(categorize_transaction)\n",
+    "\n",
+    "# Calculate accuracy\n",
+    "accuracy = (df_eval['subcategory'] == df_eval['prediction']).mean()\n",
+    "print(f\"Model accuracy: {accuracy:.2%}\")\n",
+    "\n",
+    "# Display some examples\n",
+    "print(\"\\nSample predictions:\")\n",
+    "for idx, row in df_eval.sample(min(5, len(df_eval))).iterrows():\n",
+    "    print(f\"Transaction: {row['note'][:50]}...\")\n",
+    "    print(f\"True category: {row['subcategory']}\")\n",
+    "    print(f\"Predicted: {row['prediction']}\")\n",
+    "    print(f\"Correct: {row['subcategory'] == row['prediction']}\\n\")\n",
+    "\n",
+    "# Show error analysis\n",
+    "errors = df_eval[df_eval['subcategory'] != df_eval['prediction']]\n",
+    "if len(errors) > 0:\n",
+    "    print(f\"Found {len(errors)} misclassifications\")\n",
+    "    print(\"Most common error patterns:\")\n",
+    "    error_matrix = pd.crosstab(\n",
+    "        errors['subcategory'], \n",
+    "        errors['prediction'], \n",
+    "        rownames=['True'], \n",
+    "        colnames=['Predicted']\n",
+    "    )\n",
+    "    print(error_matrix)"
+   ]
+  }
+ ],
+ "metadata": {
+  "colab": {
+   "name": "day-4-fine-tuning-a-custom-model.ipynb",
+   "toc_visible": true
+  },
+  "kaggle": {
+   "accelerator": "none",
+   "dataSources": [
+    {
+     "datasetId": 7099621,
+     "sourceId": 11349158,
+     "sourceType": "datasetVersion"
+    }
+   ],
+   "dockerImageVersionId": 30786,
+   "isGpuEnabled": false,
+   "isInternetEnabled": true,
+   "language": "python",
+   "sourceType": "notebook"
+  },
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.10.14"
+  },
+  "papermill": {
+   "default_parameters": {},
+   "duration": 1599.023284,
+   "end_time": "2025-04-10T06:53:25.716503",
+   "environment_variables": {},
+   "exception": null,
+   "input_path": "__notebook__.ipynb",
+   "output_path": "__notebook__.ipynb",
+   "parameters": {},
+   "start_time": "2025-04-10T06:26:46.693219",
+   "version": "2.6.0"
+  },
+  "widgets": {
+   "application/vnd.jupyter.widget-state+json": {
+    "state": {
+     "1cb7080fc2ce46279e0f994b25dac376": {
+      "model_module": "@jupyter-widgets/base",
+      "model_module_version": "1.2.0",
+      "model_name": "LayoutModel",
+      "state": {
+       "_model_module": "@jupyter-widgets/base",
+       "_model_module_version": "1.2.0",
+       "_model_name": "LayoutModel",
+       "_view_count": null,
+       "_view_module": "@jupyter-widgets/base",
+       "_view_module_version": "1.2.0",
+       "_view_name": "LayoutView",
+       "align_content": null,
+       "align_items": null,
+       "align_self": null,
+       "border": null,
+       "bottom": null,
+       "display": null,
+       "flex": null,
+       "flex_flow": null,
+       "grid_area": null,
+       "grid_auto_columns": null,
+       "grid_auto_flow": null,
+       "grid_auto_rows": null,
+       "grid_column": null,
+       "grid_gap": null,
+       "grid_row": null,
+       "grid_template_areas": null,
+       "grid_template_columns": null,
+       "grid_template_rows": null,
+       "height": null,
+       "justify_content": null,
+       "justify_items": null,
+       "left": null,
+       "margin": null,
+       "max_height": null,
+       "max_width": null,
+       "min_height": null,
+       "min_width": null,
+       "object_fit": null,
+       "object_position": null,
+       "order": null,
+       "overflow": null,
+       "overflow_x": null,
+       "overflow_y": null,
+       "padding": null,
+       "right": null,
+       "top": null,
+       "visibility": null,
+       "width": null
+      }
+     },
+     "65a8d9578dc946ad89994e7ad5420818": {
+      "model_module": "@jupyter-widgets/output",
+      "model_module_version": "1.0.0",
+      "model_name": "OutputModel",
+      "state": {
+       "_dom_classes": [],
+       "_model_module": "@jupyter-widgets/output",
+       "_model_module_version": "1.0.0",
+       "_model_name": "OutputModel",
+       "_view_count": null,
+       "_view_module": "@jupyter-widgets/output",
+       "_view_module_version": "1.0.0",
+       "_view_name": "OutputView",
+       "layout": "IPY_MODEL_b9b0d90d96c545fc9fb4c60b187560a4",
+       "msg_id": "",
+       "outputs": [
+        {
+         "data": {
+          "text/html": "<pre style=\"white-space:pre;overflow-x:auto;line-height:normal;font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace\"><span style=\"color: #800080; text-decoration-color: #800080\"> 100%</span> <span style=\"color: #729c1f; text-decoration-color: #729c1f\">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span style=\"color: #008000; text-decoration-color: #008000\">20/20 </span> [ <span style=\"color: #808000; text-decoration-color: #808000\">0:00:37</span> &lt; <span style=\"color: #008080; text-decoration-color: #008080\">0:00:00</span> , <span style=\"color: #800000; text-decoration-color: #800000\">0 it/s</span> ]\n</pre>\n",
+          "text/plain": "\u001b[35m 100%\u001b[0m \u001b[38;2;114;156;31m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m20/20 \u001b[0m [ \u001b[33m0:00:37\u001b[0m < \u001b[36m0:00:00\u001b[0m , \u001b[31m0 it/s\u001b[0m ]\n"
+         },
+         "metadata": {},
+         "output_type": "display_data"
+        }
+       ]
+      }
+     },
+     "8a5a839b912c4dea9fa1e741faf9bfd7": {
+      "model_module": "@jupyter-widgets/output",
+      "model_module_version": "1.0.0",
+      "model_name": "OutputModel",
+      "state": {
+       "_dom_classes": [],
+       "_model_module": "@jupyter-widgets/output",
+       "_model_module_version": "1.0.0",
+       "_model_name": "OutputModel",
+       "_view_count": null,
+       "_view_module": "@jupyter-widgets/output",
+       "_view_module_version": "1.0.0",
+       "_view_name": "OutputView",
+       "layout": "IPY_MODEL_1cb7080fc2ce46279e0f994b25dac376",
+       "msg_id": "",
+       "outputs": [
+        {
+         "data": {
+          "text/html": "<pre style=\"white-space:pre;overflow-x:auto;line-height:normal;font-family:Menlo,'DejaVu Sans Mono',consolas,'Courier New',monospace\"><span style=\"color: #800080; text-decoration-color: #800080\"> 100%</span> <span style=\"color: #729c1f; text-decoration-color: #729c1f\">━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span> <span style=\"color: #008000; text-decoration-color: #008000\">20/20 </span> [ <span style=\"color: #808000; text-decoration-color: #808000\">0:00:07</span> &lt; <span style=\"color: #008080; text-decoration-color: #008080\">0:00:00</span> , <span style=\"color: #800000; text-decoration-color: #800000\">3 it/s</span> ]\n</pre>\n",
+          "text/plain": "\u001b[35m 100%\u001b[0m \u001b[38;2;114;156;31m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\u001b[0m \u001b[32m20/20 \u001b[0m [ \u001b[33m0:00:07\u001b[0m < \u001b[36m0:00:00\u001b[0m , \u001b[31m3 it/s\u001b[0m ]\n"
+         },
+         "metadata": {},
+         "output_type": "display_data"
+        }
+       ]
+      }
+     },
+     "b9b0d90d96c545fc9fb4c60b187560a4": {
+      "model_module": "@jupyter-widgets/base",
+      "model_module_version": "1.2.0",
+      "model_name": "LayoutModel",
+      "state": {
+       "_model_module": "@jupyter-widgets/base",
+       "_model_module_version": "1.2.0",
+       "_model_name": "LayoutModel",
+       "_view_count": null,
+       "_view_module": "@jupyter-widgets/base",
+       "_view_module_version": "1.2.0",
+       "_view_name": "LayoutView",
+       "align_content": null,
+       "align_items": null,
+       "align_self": null,
+       "border": null,
+       "bottom": null,
+       "display": null,
+       "flex": null,
+       "flex_flow": null,
+       "grid_area": null,
+       "grid_auto_columns": null,
+       "grid_auto_flow": null,
+       "grid_auto_rows": null,
+       "grid_column": null,
+       "grid_gap": null,
+       "grid_row": null,
+       "grid_template_areas": null,
+       "grid_template_columns": null,
+       "grid_template_rows": null,
+       "height": null,
+       "justify_content": null,
+       "justify_items": null,
+       "left": null,
+       "margin": null,
+       "max_height": null,
+       "max_width": null,
+       "min_height": null,
+       "min_width": null,
+       "object_fit": null,
+       "object_position": null,
+       "order": null,
+       "overflow": null,
+       "overflow_x": null,
+       "overflow_y": null,
+       "padding": null,
+       "right": null,
+       "top": null,
+       "visibility": null,
+       "width": null
+      }
+     }
+    },
+    "version_major": 2,
+    "version_minor": 0
+   }
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
